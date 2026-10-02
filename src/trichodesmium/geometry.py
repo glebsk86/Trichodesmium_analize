@@ -3,12 +3,14 @@ import heapq
 import math
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt, gaussian_filter1d, map_coordinates
+from scipy.ndimage import distance_transform_edt, gaussian_filter1d, map_coordinates, label as connected_components
 from scipy.signal import find_peaks
 from skimage.morphology import skeletonize
 
 
-def skeleton_path(mask):
+def skeleton_path(mask, prune_spurs=False):
+    if connected_components(mask,structure=np.ones((3,3)))[1]>1:
+        return np.empty((0,2)),["disconnected_instance_mask"],0,0
     coords = np.argwhere(skeletonize(mask))
     lookup = {tuple(p): i for i, p in enumerate(coords)}
     graph = [[] for _ in coords]
@@ -21,6 +23,34 @@ def skeleton_path(mask):
             if dy and dx and ((y+dy, x) in lookup or (y, x+dx) in lookup):
                 continue
             graph[i].append((j, math.hypot(dy, dx)))
+    removed=set()
+    if prune_spurs and len(coords):
+        # Ignore only short medial-axis twigs caused by ragged proposal edges.
+        # Long branches/intersections remain unresolved; do not pick one chain.
+        radius=distance_transform_edt(mask)
+        limit=min(12.,max(3.,float(np.median(radius[tuple(coords.T)]))*2))
+        while True:
+            changed=False
+            for end in [i for i,g in enumerate(graph) if len(g)==1 and i not in removed]:
+                nodes=[end]
+                previous=-1
+                node=end
+                length=0.
+                while True:
+                    options=[(j,w) for j,w in graph[node] if j!=previous]
+                    if not options: break
+                    target,weight=options[0]
+                    length+=weight
+                    previous,node=node,target
+                    if len(graph[node])!=2 or length>limit: break
+                    nodes.append(node)
+                if len(graph[node])>2 and length<=limit:
+                    removed.update(nodes)
+                    for i in nodes: graph[i]=[]
+                    graph[node]=[(j,w) for j,w in graph[node] if j not in removed]
+                    changed=True
+                    break
+            if not changed: break
     ends = [i for i, neighbours in enumerate(graph) if len(neighbours) == 1]
     branch_nodes = sum(len(neighbours) > 2 for neighbours in graph)
     if len(ends) != 2 or branch_nodes:
@@ -47,7 +77,7 @@ def skeleton_path(mask):
     while indices[-1] != start:
         indices.append(parent[indices[-1]])
     # Disconnected islands must not silently disappear from one labeled object.
-    if len(indices) < len(coords):
+    if len(indices) < len(coords)-len(removed):
         return np.empty((0, 2)), ["disconnected_instance_mask"], len(ends), branch_nodes
     path = coords[indices[::-1]][:, ::-1].astype(float)  # xy
     if len(path) < 5:
@@ -71,7 +101,7 @@ def skeleton_path(mask):
         reach = steps[outside[0]]-.125 if len(outside) else 0
         tip = smooth[end] + max(0,reach)*direction
         smooth = np.vstack([tip,smooth]) if end == 0 else np.vstack([smooth,tip])
-    return smooth, [], len(ends), branch_nodes
+    return smooth, ["short_skeleton_spurs_ignored"] if removed else [], len(ends), branch_nodes
 
 
 def arc_samples(path):
@@ -85,15 +115,15 @@ def arc_samples(path):
     return distances, xy, normals
 
 
-def measure(mask, rgb, obstruction):
-    path, flags, ends, branches = skeleton_path(mask)
+def measure(mask, rgb, obstruction, prune_spurs=False):
+    path, flags, ends, branches = skeleton_path(mask,prune_spurs)
     result = {"flags": flags, "endpoint_count": ends, "branch_nodes": branches,
               "length_px": None, "width_px": None, "width_std_px": None,
               "width_samples_px": [], "cell_length_px": None,
               "cell_intervals_px": [], "cell_count": None, "cell_count_method": "unavailable",
               "path_xy": path.tolist(), "septum_points_xy": [], "width_lines_xy": [],
               "measurement_quality": "низкая", "cell_quality": "не определена"}
-    if len(path) < 5 or flags:
+    if len(path) < 5 or set(flags)-{"short_skeleton_spurs_ignored"}:
         return result
     s, xy, normals = arc_samples(path)
     result["length_px"] = float(s[-1])

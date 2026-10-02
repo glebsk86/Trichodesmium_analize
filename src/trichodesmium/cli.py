@@ -17,7 +17,8 @@ from . import __version__
 from .calibration import Calibration, auto_scale, manual_scale, point_scale, positive, ruler_mask
 from .geometry import measure
 from .imaging import candidates, list_images, read_image, read_labels
-from .reporting import DETAIL_FIELDS, SUMMARY_FIELDS, per_photo, save_visuals, summary, workbook, write_csv, write_json
+from .segmentation import PROFILE, microscope_candidates
+from .reporting import DETAIL_FIELDS, SUMMARY_FIELDS, per_photo, save_visuals, summary, workbook, write_csv, write_json, review_index
 
 
 def parser():
@@ -33,6 +34,10 @@ def parser():
     p.add_argument("--reference-points",type=float,nargs=4,metavar=("X1","Y1","X2","Y2"))
     p.add_argument("--reference-distance-um",type=float)
     p.add_argument("--mask-dir",type=Path,help="Optional grayscale object masks, relative path matching input but suffix .png")
+    p.add_argument("--mask-format",choices=["auto","binary","instances"],default="auto",
+                   help="Use instances for masks downloaded from the review editor")
+    p.add_argument("--segmentation-profile",choices=[PROFILE,"generic"],default=PROFILE,
+                   help="Capture-specific experimental core detector or generic local-contrast baseline")
     p.add_argument("--min-area",type=int,default=80)
     p.add_argument("--min-elongation",type=float,default=3.)
     p.add_argument("--contrast",type=float,default=.08)
@@ -141,10 +146,15 @@ def run(args):
             if args.mask_dir:
                 mask_path=args.mask_dir/relative.with_suffix(".png")
                 if not mask_path.is_file(): raise ValueError(f"Missing object mask: {relative.with_suffix('.png')}")
-                labels=read_labels(mask_path,rgb.shape)
+                labels=read_labels(mask_path,rgb.shape,args.mask_format)
                 imported=True
                 info["mask_sha256"]=hashlib.sha256(mask_path.read_bytes()).hexdigest()
-            else: labels=candidates(rgb,args.min_area,args.contrast,args.saturation)
+                info["segmentation"]={"profile":"imported_mask","mask_format":args.mask_format}
+            elif args.segmentation_profile==PROFILE:
+                labels,info["segmentation"]=microscope_candidates(rgb,args.min_area,args.min_elongation)
+            else:
+                labels=candidates(rgb,args.min_area,args.contrast,args.saturation)
+                info["segmentation"]={"profile":"generic","notice":"Experimental local contrast; not tuned to supplied microscope photographs"}
             image_rows=[]
             info["segmented_region_count"]=int(len(np.unique(labels))-1)
             for region in regionprops(labels):
@@ -155,7 +165,8 @@ def run(args):
                 cx0,cy0=max(0,x0-3),max(0,y0-3)
                 cx1,cy1=min(rgb.shape[1],x1+3),min(rgb.shape[0],y1+3)
                 local=labels[cy0:cy1,cx0:cx1]==region.label
-                metrics=measure(local,rgb[cy0:cy1,cx0:cx1],obstruction[cy0:cy1,cx0:cx1])
+                metrics=measure(local,rgb[cy0:cy1,cx0:cx1],obstruction[cy0:cy1,cx0:cx1],
+                                prune_spurs=not imported and args.segmentation_profile==PROFILE)
                 for key in ("path_xy","septum_points_xy"):
                     metrics[key]=[[p[0]+cx0,p[1]+cy0] for p in metrics[key]]
                 metrics["width_lines_xy"]=[[[p[0]+cx0,p[1]+cy0] for p in line] for line in metrics["width_lines_xy"]]
@@ -168,10 +179,14 @@ def run(args):
                      "calibration_method":cal.method,"calibration_quality":cal.quality,"calibration_reasons":cal.reasons,
                      "bbox_xyxy":[int(x0),int(y0),int(x1),int(y1)],"width_sample_count":len(metrics["width_samples_px"]),
                      "cell_interval_count":len(metrics["cell_intervals_px"]),
-                     "segmentation_method":"imported_mask" if imported else "classical_experimental",
+                     "segmentation_method":"imported_mask" if imported else args.segmentation_profile,
                      "ruler_overlap_fraction":float(np.mean(obstruction[cy0:cy1,cx0:cx1][local])),
                      "crop_original":None,"crop_annotated":None,"object_mask":None}
                 row["flags"].append("unverified_object_identity_and_segmentation")
+                if not imported and args.segmentation_profile==PROFILE:
+                    row["flags"].extend(["pigment_core_boundary_requires_review","segmentation_may_split_one_filament"])
+                    if not info["segmentation"]["source_dimensions_match_training"]:
+                        row["flags"].append("profile_input_dimensions_differ_from_training")
                 if scale is None: row["flags"].append("uncalibrated_pixel_measurements_only")
                 for px,um in [("length_px","length_um"),("width_px","width_um"),("width_std_px","width_std_um"),("cell_length_px","cell_length_um")]:
                     row[um]=row[px]*scale if row[px] is not None and scale is not None else None
@@ -179,7 +194,8 @@ def run(args):
             info["candidate_count"]=len(image_rows)
             info["excluded_by_size_or_shape_count"]=info["segmented_region_count"]-len(image_rows)
             info["status"]="review_required" if cal.um_per_px else "uncalibrated"
-            save_visuals(directory,rgb,labels,image_rows,obstruction,not args.no_crops)
+            save_visuals(directory,rgb,labels,image_rows,obstruction,not args.no_crops,
+                         photo_name=relative.as_posix())
             per_photo(directory,image_rows,info)
             rows.extend(image_rows)
         except Exception as exc:
@@ -192,6 +208,7 @@ def run(args):
     write_csv(args.output/"details.csv",rows,DETAIL_FIELDS)
     write_csv(args.output/"photos.csv",photos,["photo","status","candidate_count","error","calibration"])
     workbook(args.output/"measurements.xlsx",rows,photos)
+    review_index(args.output,rows,photos)
     manifest.update(images=photos,object_count=len(rows),issue_count=errors,finished_utc=datetime.now(timezone.utc).isoformat())
     write_json(args.output/"manifest.json",manifest)
     print(f"Saved {len(rows)} candidates from {len(paths)} images to {args.output}. Inspect overlays before use.")

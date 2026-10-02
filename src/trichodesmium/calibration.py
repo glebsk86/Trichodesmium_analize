@@ -74,7 +74,7 @@ def ruler_axes(rgb):
     return distinct
 
 
-def analyse_axis(rgb, p0, p1):
+def analyse_axis_discrete(rgb, p0, p1):
     """Sample outside the continuous axis, where transverse ticks recur."""
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(float) / 255
     length = float(np.linalg.norm(p1-p0))
@@ -124,6 +124,56 @@ def analyse_axis(rgb, p0, p1):
             "fundamental_fraction": fundamental, "profile": profile.tolist()}
 
 
+def analyse_axis(rgb,p0,p1):
+    """Resolve blurred fine ticks; require individual tick-spacing support.
+
+    A Fourier harmonic of coarse marks is NOT accepted on spectral power alone.
+    The supporting peak gaps must predominantly equal the proposed interval.
+    """
+    gray=cv2.cvtColor(rgb,cv2.COLOR_RGB2GRAY).astype(np.float32)/255
+    length=float(np.linalg.norm(p1-p0))
+    direction=(p1-p0)/length
+    normal=np.array([-direction[1],direction[0]])
+    step=.25
+    t=np.arange(0,length,step)
+    offsets=np.r_[np.arange(-8,-1,.5),np.arange(2,8.5,.5)]
+    xy=p0[:,None,None]+direction[:,None,None]*t[None,None,:]+normal[:,None,None]*offsets[None,:,None]
+    samples=map_coordinates(1-gray,[xy[1],xy[0]],order=1,mode="constant",cval=0)
+    profile=np.mean(samples,axis=0)
+    signal=gaussian_filter1d(profile,1)-gaussian_filter1d(profile,3/step)
+    sides=[np.mean(samples[offsets<0],axis=0),np.mean(samples[offsets>0],axis=0)]
+    side_signals=[gaussian_filter1d(p,1)-gaussian_filter1d(p,3/step) for p in sides]
+    amplitudes=[float(np.std(p)) for p in side_signals]
+    if min(amplitudes)<.001 or min(amplitudes)/max(amplitudes)<.18:
+        return analyse_axis_discrete(rgb,p0,p1)
+    peak_signal=gaussian_filter1d(profile,1)-gaussian_filter1d(profile,15/step)
+    positions_idx,_=find_peaks(peak_signal,prominence=max(.002,float(np.std(signal))*.25),distance=2.5/step)
+    positions=t[positions_idx]
+    if len(positions)<12:
+        return analyse_axis_discrete(rgb,p0,p1)
+    frequency=np.fft.rfftfreq(len(signal),step)
+    power=abs(np.fft.rfft(signal*np.hanning(len(signal))))**2
+    valid=(frequency>1/25)&(frequency<1/2.5)
+    spectral_peaks,_=find_peaks(power)
+    strongest=sorted([i for i in spectral_peaks if valid[i]],key=lambda i:-power[i])[:15]
+    gaps=np.diff(positions)
+    for peak in strongest:
+        spacing=float(1/frequency[peak])
+        strength=float(power[peak]/(np.median(power[valid])+1e-9))
+        matched=abs(gaps/spacing-1)<.2
+        regular=float(np.mean(matched))
+        coverage=float(regular*len(positions)*spacing/length)
+        if strength<15 or regular<.58 or coverage<.4:
+            continue
+        # The spectral estimate is subpixel, while peak gaps are sampled at 0.25 px.
+        return {"p0_xy":p0.tolist(),"p1_xy":p1.tolist(),"spacing_px":spacing,
+                "tick_positions_px":positions.tolist(),"regular_fraction":regular,
+                "fundamental_fraction":regular,"profile":profile.tolist(),
+                "spacing_method":"spectrum_with_individual_tick_support",
+                "spectral_strength":strength,"tick_coverage":coverage}
+    return analyse_axis_discrete(rgb,p0,p1)
+
+
 def auto_scale(rgb, tick_um=3., ruler_length_um=600.):
     positive(tick_um, "tick_um")
     positive(ruler_length_um, "ruler_length_um")
@@ -137,7 +187,8 @@ def auto_scale(rgb, tick_um=3., ruler_length_um=600.):
     if not valid:
         result.reasons = ["no_regular_ruler_ticks"]
         return result
-    valid.sort(key=lambda a: (-a["regular_fraction"], -len(a["tick_positions_px"])))
+    # Prefer many supported fine intervals over a very short accidental match.
+    valid.sort(key=lambda a: -(a["fundamental_fraction"] * len(a["tick_positions_px"])))
     primary = valid[0]
     # Repeated spacing along nonparallel axes is the additional validation.
     d0 = np.subtract(primary["p1_xy"], primary["p0_xy"])

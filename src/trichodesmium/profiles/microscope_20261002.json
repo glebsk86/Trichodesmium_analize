@@ -1,0 +1,42 @@
+{
+  "name": "microscope-20261002",
+  "purpose": "experimental filament pigment-core proposals, not species identification",
+  "training_notice": "Tuned and trained on all six supplied photographs. No independent validation. Approximate assistant centerline scribbles are not reviewed instance contours. Masks may omit transparent edges, weak portions and tips.",
+  "seed": 20261002,
+  "model_sha256": "02e68132267f5ba80e262f6d000607a2f661f8d0f338fea9bd211894833724d9",
+  "training_images": [
+    {
+      "filename": "photo_1_2026-10-02_20-13-31.jpg",
+      "sha256": "5596ec0a84c4ce6225941eae0a901ad1c0d48ddf81f8d16eedaf78a3354fc49d"
+    },
+    {
+      "filename": "photo_2_2026-10-02_20-13-31.jpg",
+      "sha256": "3d4b6ba258d006e230be74ddd2d08e63699037319071e35ef4ee9fe7aac6b8e7"
+    },
+    {
+      "filename": "photo_3_2026-10-02_20-13-31.jpg",
+      "sha256": "f1fb393a7169af184520749feff6c236469e94a1e081342df0c4c6f5794748e4"
+    },
+    {
+      "filename": "photo_4_2026-10-02_20-13-31.jpg",
+      "sha256": "47cd106fce0f13426fea8ebb0f4f57cfe7c23a8c3776554a799bfc616da6880a"
+    },
+    {
+      "filename": "photo_5_2026-10-02_20-13-31.jpg",
+      "sha256": "e6f55660a7fcfd2ef4262f88679f070e2bf5c6f7b17483f0da10f19814926549"
+    },
+    {
+      "filename": "photo_6_2026-10-02_20-13-31.jpg",
+      "sha256": "1ef328266e82a2d09f021dda0c6f009783b63952fbe535b216c34077c5bb0a1c"
+    }
+  ],
+  "annotation_type": "approximate centerline scribbles, 5 px wide; exclusion band 17 px",
+  "annotator": "assistant, not expert-reviewed",
+  "source_dimensions_px": [
+    960,
+    1280
+  ],
+  "feature_version": 1,
+  "trees": 24,
+  "max_depth": 12
+}

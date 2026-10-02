@@ -159,6 +159,15 @@ def test_cli_exports_without_overwriting(tmp_path):
     row=json.loads(details[0].read_text())["objects"][0]
     for field in ("crop_original","crop_annotated","object_mask"):
         assert (output/row[field]).is_file()
+    # Export the original RGB pixels, not the object labels or a masked image.
+    original=np.asarray(Image.open(output/row["crop_original"]))
+    x0,y0,x1,y1=row["crop_bbox_xyxy"]
+    np.testing.assert_array_equal(original,rgb[y0:y1,x0:x1])
+    assert original.shape[2]==3
+    index=(output/"index.html").read_text()
+    assert row["crop_original"] in index
+    assert "Исходный фрагмент фото" in index
+    assert list((output/"images").glob("*/edit_mask.html"))
     snapshot=(output/"manifest.json").read_bytes()
     assert main(argv)==2
     assert (output/"manifest.json").read_bytes()==snapshot
