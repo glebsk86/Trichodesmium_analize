@@ -2,7 +2,8 @@
 import html
 import re
 import textwrap
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
+from .fonts import report_font
 
 
 def natural_key(name):
@@ -22,13 +23,7 @@ def report_objects(row):
 
 def build_report(output, manifest):
     sheets = output/'png-report';sheets.mkdir()
-    font = None
-    for name in ('DejaVuSans.ttf','/System/Library/Fonts/Supplemental/Arial.ttf'):
-        try:
-            font = ImageFont.truetype(name,20);break
-        except OSError:
-            pass
-    if font is None:font = ImageFont.load_default()
+    font = report_font(20)
     parts = ["<!doctype html><html lang='ru'><meta charset='utf-8'><title>Находки B</title>",
              "<style>body{font:18px system-ui;background:#eee;margin:24px}section{background:white;padding:20px;margin:24px 0}img{max-width:100%;max-height:1100px}p{line-height:1.5}</style>",
              "<h1>Находки B: фото по порядку</h1>",

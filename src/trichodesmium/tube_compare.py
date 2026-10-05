@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from .fonts import report_font
 from .cli import provenance
 from .calibration import Calibration, ruler_mask
 from .imaging import field_mask, read_image
@@ -39,13 +40,7 @@ def sha256(path):
 
 
 def font(size):
-    # Portable fallback; the report text remains UTF-8 even without this font.
-    for name in ("DejaVuSans.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf"):
-        try:
-            return ImageFont.truetype(name, size)
-        except OSError:
-            pass
-    return ImageFont.load_default()
+    return report_font(size)
 
 
 def mask_png(path, mask):

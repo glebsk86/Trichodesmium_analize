@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from .fonts import report_font
 from .tubular import normals, sample
 
 
@@ -94,14 +95,7 @@ def guide_label(ident,guides):
 
 
 def with_header(rgb,labels,legend="Голубая ось: L участка; жёлтые сечения: W маски"):
-    font = None
-    for filename in ("DejaVuSans.ttf","/System/Library/Fonts/Supplemental/Arial.ttf"):
-        try:
-            font = ImageFont.truetype(filename,16)
-            break
-        except OSError:
-            pass
-    if font is None:font = ImageFont.load_default()
+    font = report_font(16)
     lines = []
     for text in [legend,*labels]:
         current = ""

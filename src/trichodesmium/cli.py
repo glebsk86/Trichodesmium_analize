@@ -53,10 +53,17 @@ def provenance(args):
     root=Path(__file__).resolve().parents[2]
     revision=None
     dirty=None
-    try:
-        revision=subprocess.check_output(["git","-C",str(root),"rev-parse","HEAD"],stderr=subprocess.DEVNULL,text=True).strip()
-        dirty=bool(subprocess.check_output(["git","-C",str(root),"status","--porcelain"],stderr=subprocess.DEVNULL,text=True).strip())
-    except (OSError,subprocess.CalledProcessError): pass
+    build = None
+    if getattr(sys,"frozen",False):
+        try:
+            build = json.loads(Path(__file__).with_name("assets").joinpath("build-info.json").read_text())
+            revision = build.get("git_commit");dirty = build.get("git_dirty")
+        except (OSError,ValueError):pass
+    else:
+        try:
+            revision=subprocess.check_output(["git","-C",str(root),"rev-parse","HEAD"],stderr=subprocess.DEVNULL,text=True).strip()
+            dirty=bool(subprocess.check_output(["git","-C",str(root),"status","--porcelain"],stderr=subprocess.DEVNULL,text=True).strip())
+        except (OSError,subprocess.CalledProcessError):pass
     dependencies={}
     for name in ["numpy","scipy","opencv-python-headless","scikit-image","Pillow","pillow-heif","openpyxl"]:
         try: dependencies[name]=importlib.metadata.version(name)
@@ -67,7 +74,7 @@ def provenance(args):
         decoder = libheif_version()
     except ImportError:
         pass
-    return {"libheif_version":decoder,"program_version":__version__,"git_commit":revision,"git_dirty":dirty,
+    return {"build":build,"libheif_version":decoder,"program_version":__version__,"git_commit":revision,"git_dirty":dirty,
             "started_utc":datetime.now(timezone.utc).isoformat(),"python":sys.version,
             "dependencies":dependencies,"parameters":{k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()},
             "notice":"All objects and septa are unverified candidates. Species identification is not implemented."}
