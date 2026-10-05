@@ -159,12 +159,16 @@ def execute(jobs):
 def run_batch(args,reference_calibration=None,reference_size=None):
     output=args.output/'report';jobs=jobs_for(args,output,reference_calibration,reference_size)
     if not jobs:raise ValueError('Нет поддерживаемых фотографий.')
+    from .linux_parallel import available_workers,execute as execute_parallel
+    workers=available_workers(getattr(args,'workers',1),len(jobs))
+    args.effective_workers=workers
     output.mkdir(parents=True);started=time.perf_counter()
     manifest=provenance(args);manifest.update(algorithm='B',experiment='B-continuous-filaments',settings=asdict(TubeSettings()),
           working_coordinates='EXIF-oriented; normalized RGB8 raster, independent of container format',
           weight_notice='Relative fit scores, not species probabilities',images=[],duplicates=[],errors=[])
     seen={}
-    for result in execute(jobs):
+    results=execute_parallel(jobs,workers) if workers>1 else execute(jobs)
+    for result in results:
         if 'error' in result:manifest['errors'].append(result['error']);print(f"Ошибка: {result['error']}",flush=True);continue
         row=result['image'];digest=row['decoded_rgb_sha256']
         if digest in seen:manifest['duplicates'].append({'photo':row['photo'],'duplicate_of':seen[digest]});continue

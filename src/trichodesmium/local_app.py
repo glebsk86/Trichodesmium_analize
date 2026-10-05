@@ -71,6 +71,7 @@ def parser():
     p.add_argument('--mask-dir',type=Path,help='Папка проверенных PNG масок вместо детектора')
     p.add_argument('--mask-format',choices=['auto','binary','instances'],default='auto')
     p.add_argument('--working-width',type=int,default=960,help='Ширина рабочего B-растра; по умолчанию 960 px')
+    p.add_argument('--workers',type=int,default=0,help='Linux: число параллельных фото; 0 — авто, 1 — последовательно')
     p.add_argument('--version',action='version',version=__version__)
     return p
 
@@ -80,6 +81,7 @@ def run(args):
     output = (args.output or Path('results')/datetime.now().strftime('run-%Y%m%d-%H%M%S-%f')).expanduser().resolve()
     if output.exists():raise ValueError('Папка результата уже существует; выберите новое имя.')
     if args.working_width<64:raise ValueError('Рабочая ширина должна быть не меньше 64 px.')
+    if args.workers<0:raise ValueError('--workers должен быть 0 или положительным числом.')
     seed_args = [str(source),'-o',str(output/'seed-report'),'--scale-mode',args.scale_mode]
     for flag,value in [('--um-per-pixel',args.um_per_pixel),('--reference',args.reference),
                        ('--reference-distance-um',args.reference_distance_um),('--mask-dir',args.mask_dir)]:
@@ -137,4 +139,6 @@ def main(argv=None):
 
 
 if __name__=='__main__':
+    import multiprocessing
+    multiprocessing.freeze_support()
     raise SystemExit(main())
