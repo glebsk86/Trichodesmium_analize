@@ -210,7 +210,7 @@ def run(args):
         for image in sorted(seed_manifest["images"],key=lambda im:natural_key(im["photo"])):
             try:
                 source = source_dir/image["photo"]
-                rgb_original = read_image(source)
+                rgb_original,decoding = read_image(source,return_metadata=True)
                 decoded_hash = hashlib.sha256(rgb_original.tobytes()+str(rgb_original.shape).encode()).hexdigest()
                 if decoded_hash in seen:
                     manifest["duplicates"].append({"photo": image["photo"], "duplicate_of": seen[decoded_hash],
@@ -242,6 +242,10 @@ def run(args):
                 dest = output/"images"/image_id
                 dest.mkdir(parents=True)
                 shutil.copy2(source, dest/("original"+source.suffix.lower()))
+                preview_file = "original"+source.suffix.lower()
+                if decoding['format']=='HEIF':
+                    preview_file = "original-preview.png"
+                    Image.fromarray(rgb_original).save(dest/preview_file)
                 Image.fromarray(rgb).save(dest/"working-original.png")
                 Image.fromarray(labels).save(dest/"seed-labels.tif",compression="tiff_deflate")
                 mask_png(dest/"obstruction.png", obstruction)
@@ -258,7 +262,8 @@ def run(args):
                        "original_size_xy": [w, h], "working_size_xy": [args.working_width, wh],
                        "original_to_working_scale_xy": [args.working_width/w, wh/h],
                        "cross_proposal_overlaps": events, "proposals": [],
-                       "original_file":"original"+source.suffix.lower(), "calibration":calibration}
+                       "original_file":"original"+source.suffix.lower(), "original_preview_file":preview_file,
+                       "decoding":decoding,"calibration":calibration}
                 html_parts.extend([f"<section><h2>{html.escape(image['photo'])}</h2>",
                                    f"<a href='images/{image_id}/comparison.jpg'><img src='images/{image_id}/comparison.jpg'></a>"])
                 for proposal in proposals:

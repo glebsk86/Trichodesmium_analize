@@ -6,6 +6,8 @@ import importlib.metadata
 import json
 from pathlib import Path
 import re
+import shutil
+from PIL import Image
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -56,10 +58,16 @@ def provenance(args):
         dirty=bool(subprocess.check_output(["git","-C",str(root),"status","--porcelain"],stderr=subprocess.DEVNULL,text=True).strip())
     except (OSError,subprocess.CalledProcessError): pass
     dependencies={}
-    for name in ["numpy","scipy","opencv-python-headless","scikit-image","Pillow","openpyxl"]:
+    for name in ["numpy","scipy","opencv-python-headless","scikit-image","Pillow","pillow-heif","openpyxl"]:
         try: dependencies[name]=importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError: dependencies[name]="unknown"
-    return {"program_version":__version__,"git_commit":revision,"git_dirty":dirty,
+    decoder = None
+    try:
+        from pillow_heif import libheif_version
+        decoder = libheif_version()
+    except ImportError:
+        pass
+    return {"libheif_version":decoder,"program_version":__version__,"git_commit":revision,"git_dirty":dirty,
             "started_utc":datetime.now(timezone.utc).isoformat(),"python":sys.version,
             "dependencies":dependencies,"parameters":{k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()},
             "notice":"All objects and septa are unverified candidates. Species identification is not implemented."}
@@ -95,7 +103,7 @@ def validate(args):
 def run(args):
     validate(args)
     paths=list_images(args.input,args.recursive)
-    if not paths: raise ValueError("No supported photographs found (JPG, PNG, TIFF, BMP)")
+    if not paths: raise ValueError("No supported photographs found (JPG, PNG, TIFF, BMP, HEIC, HEIF)")
     reference=None
     reference_shape=None
     if args.scale_mode=="reference":
@@ -122,7 +130,12 @@ def run(args):
         info={"photo":relative.as_posix(),"image_id":image_id,"status":"processing","candidate_count":0,"error":None}
         print(f"[{number}/{len(paths)}] {relative}",flush=True)
         try:
-            rgb=read_image(path)
+            rgb,info["decoding"]=read_image(path,return_metadata=True)
+            if info["decoding"]["format"]=="HEIF":
+                original="original"+path.suffix.lower()
+                shutil.copy2(path,directory/original)
+                Image.fromarray(rgb).save(directory/"original-preview.png")
+                info.update(original_file=original,original_preview_file="original-preview.png")
             info["sha256"]=hashlib.sha256(path.read_bytes()).hexdigest()
             info["oriented_size_px"]=[rgb.shape[1],rgb.shape[0]]
             auto=auto_scale(rgb,args.tick_um,args.ruler_length_um)

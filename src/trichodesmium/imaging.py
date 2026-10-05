@@ -1,20 +1,69 @@
 """Input decoding and replaceable baseline segmentation."""
 from pathlib import Path
+from functools import lru_cache
+from io import BytesIO
 
 import cv2
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageCms
 from scipy.ndimage import binary_fill_holes
 from skimage.measure import label
 
-EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
+HEIF_EXTENSIONS = {".heic", ".heif"}
+EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"} | HEIF_EXTENSIONS
 
 
-def read_image(path):
+@lru_cache(maxsize=1)
+def enable_heif():
+    """Lazy registration leaves existing image formats usable without HEIF."""
+    try:
+        from pillow_heif import register_heif_opener
+    except ImportError as exc:
+        raise ValueError("HEIC/HEIF requires pillow-heif. Install with: python -m pip install 'pillow-heif>=1,<2'") from exc
+    # Decode the primary full-resolution image, never a thumbnail/depth map.
+    register_heif_opener(thumbnails=False, depth_images=False, aux_images=False)
+
+
+def read_image(path, *, return_metadata=False):
+    try:
+        return _decode_image(path,return_metadata=return_metadata)
+    except (SyntaxError,RuntimeError,EOFError,ImageCms.PyCMSError) as exc:
+        raise ValueError(f"Image decoding failed: {exc}") from exc
+
+
+def _decode_image(path, *, return_metadata=False):
+    if Path(path).suffix.lower() in HEIF_EXTENSIONS:
+        enable_heif()
     with Image.open(path) as im:
-        if getattr(im, "n_frames", 1) != 1:
+        heif = im.format == "HEIF"
+        frames = getattr(im, "n_frames", 1)
+        if not heif and frames != 1:
             raise ValueError("Multipage images must be exported as separate photographs")
-        return np.asarray(ImageOps.exif_transpose(im).convert("RGB"))
+        info = {"format":im.format,"frame_count":frames,"selected_frame":im.tell(),
+                "selection":"HEIF primary image" if heif else "single image",
+                "source_bit_depth":im.info.get("bit_depth"),"decoded_mode":"RGB8",
+                "original_orientation":im.info.get("original_orientation",im.getexif().get(274,1)),
+                "colour_conversion":"existing RGB conversion","warnings":[]}
+        oriented = ImageOps.exif_transpose(im).convert("RGB")
+        if heif:
+            icc = im.info.get("icc_profile")
+            nclx = im.info.get("nclx_profile") or {}
+            info["nclx_profile"] = nclx
+            if icc:
+                oriented = ImageCms.profileToProfile(oriented,ImageCms.ImageCmsProfile(BytesIO(icc)),
+                                                     ImageCms.createProfile("sRGB"),outputMode="RGB")
+                info["colour_conversion"] = "embedded ICC to sRGB"
+            else:
+                info["colour_conversion"] = "decoder RGB; no ICC transform"
+                if nclx.get("color_primaries",1)!=1 or nclx.get("transfer_characteristics",13)!=13:
+                    info["warnings"].append("non_srgb_nclx_requires_colour_review")
+            if info["source_bit_depth"] and info["source_bit_depth"]>8:
+                info["warnings"].append("high_bit_depth_decoded_to_RGB8")
+            if frames>1:
+                info["warnings"].append("only_primary_HEIF_image_processed")
+        rgb = np.array(oriented,dtype=np.uint8,copy=True)
+        info["oriented_size_px"] = [rgb.shape[1],rgb.shape[0]]
+        return (rgb,info) if return_metadata else rgb
 
 
 def field_mask(rgb):

@@ -168,6 +168,9 @@ def review_index(directory, rows, photos):
         if photo["status"] == "error":
             content.append(f"<p>{esc(str(photo['error']))}</p></section>")
             continue
+        if photo.get("original_preview_file"):
+            content.append(f"<p>Исходное фото · <a href='{root}/{esc(photo['original_file'])}' download>Скачать HEIC/HEIF</a></p>"
+                           f"<img src='{root}/{esc(photo['original_preview_file'])}' alt='Исходный кадр'>")
         content.append(f"<p><a href='{root}/overview.png'>Весь кадр с разметкой</a> · "
                        f"<a href='{root}/ruler_mask.png'>Маска шкалы</a>")
         if (directory/root/"edit_mask.html").is_file():

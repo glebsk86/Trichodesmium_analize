@@ -48,9 +48,12 @@ def build_report(output, manifest):
         add('Исходное фото · обзор',directory/'working-original.png')
         prefix = f"images/{row['image_id']}"
         original = row['original_file']
+        preview = row.get('original_preview_file',original)
         parts.extend([f"<section><h2>{html.escape(row['photo'])}</h2>",
                       f"<p><a href='png-report/{row['image_id']}.png'>PNG отчёт этого фото</a></p>",
-                      f"<h3>Исходное фото</h3><a href='{prefix}/{original}'><img src='{prefix}/{original}'></a>"])
+                      f"<h3>Исходное фото</h3><a href='{prefix}/{preview}'><img src='{prefix}/{preview}'></a>"])
+        if preview!=original:
+            parts.append(f"<p><a href='{prefix}/{original}' download>Скачать исходный HEIC/HEIF</a></p>")
         scale = row['calibration']['working_um_per_px_xy']
         caption = ('Масштаб не определён; доступны только px.' if scale is None else
                    f'Масштаб: {scale[0]:.4f} × {scale[1]:.4f} мкм/рабочий px. Требует проверки.')
