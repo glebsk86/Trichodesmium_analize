@@ -11,13 +11,13 @@ import sys
 from datetime import datetime, timezone
 
 import numpy as np
-from skimage.measure import regionprops
+from skimage.measure import label, regionprops
 
 from . import __version__
 from .calibration import Calibration, auto_scale, manual_scale, point_scale, positive, ruler_mask
 from .geometry import measure
 from .imaging import candidates, list_images, read_image, read_labels
-from .segmentation import PROFILE, microscope_candidates
+from .segmentation import PROFILE, COLOUR_PROFILE, microscope_candidates, colour_assisted_candidates
 from .reporting import DETAIL_FIELDS, SUMMARY_FIELDS, per_photo, save_visuals, summary, workbook, write_csv, write_json, review_index
 
 
@@ -36,8 +36,8 @@ def parser():
     p.add_argument("--mask-dir",type=Path,help="Optional grayscale object masks, relative path matching input but suffix .png")
     p.add_argument("--mask-format",choices=["auto","binary","instances"],default="auto",
                    help="Use instances for masks downloaded from the review editor")
-    p.add_argument("--segmentation-profile",choices=[PROFILE,"generic"],default=PROFILE,
-                   help="Capture-specific experimental core detector or generic local-contrast baseline")
+    p.add_argument("--segmentation-profile",choices=[COLOUR_PROFILE,PROFILE,"generic"],default=COLOUR_PROFILE,
+                   help="Colour-assisted capture profile, legacy forest core detector, or generic baseline")
     p.add_argument("--min-area",type=int,default=80)
     p.add_argument("--min-elongation",type=float,default=3.)
     p.add_argument("--contrast",type=float,default=.08)
@@ -152,6 +152,8 @@ def run(args):
                 info["segmentation"]={"profile":"imported_mask","mask_format":args.mask_format}
             elif args.segmentation_profile==PROFILE:
                 labels,info["segmentation"]=microscope_candidates(rgb,args.min_area,args.min_elongation)
+            elif args.segmentation_profile==COLOUR_PROFILE:
+                labels,info["segmentation"]=colour_assisted_candidates(rgb,args.min_area,args.min_elongation)
             else:
                 labels=candidates(rgb,args.min_area,args.contrast,args.saturation)
                 info["segmentation"]={"profile":"generic","notice":"Experimental local contrast; not tuned to supplied microscope photographs"}
@@ -159,14 +161,15 @@ def run(args):
             info["segmented_region_count"]=int(len(np.unique(labels))-1)
             for region in regionprops(labels):
                 elongation=region.axis_major_length/max(region.axis_minor_length,1.)
-                if not imported and (region.area<args.min_area or elongation<args.min_elongation): continue
+                if not imported and (region.area<args.min_area or
+                        (args.segmentation_profile!=COLOUR_PROFILE and elongation<args.min_elongation)): continue
                 y0,x0,y1,x1=region.bbox
                 # Work on padded local crops to avoid full-frame skeletonization per object.
                 cx0,cy0=max(0,x0-3),max(0,y0-3)
                 cx1,cy1=min(rgb.shape[1],x1+3),min(rgb.shape[0],y1+3)
                 local=labels[cy0:cy1,cx0:cx1]==region.label
                 metrics=measure(local,rgb[cy0:cy1,cx0:cx1],obstruction[cy0:cy1,cx0:cx1],
-                                prune_spurs=not imported and args.segmentation_profile==PROFILE)
+                                prune_spurs=not imported and args.segmentation_profile in (PROFILE,COLOUR_PROFILE))
                 for key in ("path_xy","septum_points_xy"):
                     metrics[key]=[[p[0]+cx0,p[1]+cy0] for p in metrics[key]]
                 metrics["width_lines_xy"]=[[[p[0]+cx0,p[1]+cy0] for p in line] for line in metrics["width_lines_xy"]]
@@ -183,8 +186,12 @@ def run(args):
                      "ruler_overlap_fraction":float(np.mean(obstruction[cy0:cy1,cx0:cx1][local])),
                      "crop_original":None,"crop_annotated":None,"object_mask":None}
                 row["flags"].append("unverified_object_identity_and_segmentation")
-                if not imported and args.segmentation_profile==PROFILE:
+                if not imported and args.segmentation_profile in (PROFILE,COLOUR_PROFILE):
                     row["flags"].extend(["pigment_core_boundary_requires_review","segmentation_may_split_one_filament"])
+                    if args.segmentation_profile==COLOUR_PROFILE:
+                        row["flags"].append("colour_assisted_boundary_requires_review")
+                        if label(local,connectivity=2).max()>1:
+                            row["flags"].append("nearby_fragments_associated_without_gap_filling")
                     if not info["segmentation"]["source_dimensions_match_training"]:
                         row["flags"].append("profile_input_dimensions_differ_from_training")
                 if scale is None: row["flags"].append("uncalibrated_pixel_measurements_only")

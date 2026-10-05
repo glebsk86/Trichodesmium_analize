@@ -26,6 +26,8 @@ FLAG_LABELS={
     "disconnected_instance_mask":"Маска разорвана — единая длина не измерена",
     "pigment_core_boundary_requires_review":"Выделена сердцевина; проверьте внешние границы",
     "segmentation_may_split_one_filament":"Несколько кандидатов могут быть частями одной нити",
+    "colour_assisted_boundary_requires_review":"Граница по локальному цвету требует проверки; короткие/бледные нити могут быть пропущены",
+    "nearby_fragments_associated_without_gap_filling":"Близкие фрагменты получили один ID; промежутки в маске не заполнены",
     "unverified_object_identity_and_segmentation":"Объект и его контур ещё не подтверждены",
     "frame_truncated_visible_fragment":"Нить обрезана краем кадра",
     "ruler_overlap":"Пересечение со шкалой",
