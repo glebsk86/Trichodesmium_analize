@@ -56,3 +56,16 @@ def test_documented_module_entry_prints_help():
     import subprocess,sys
     result=subprocess.run([sys.executable,'-m','trichodesmium.local_app','--help'],capture_output=True,text=True)
     assert result.returncode==0 and '--working-width' in result.stdout
+
+
+def test_frozen_provenance_reads_bundled_build_record(tmp_path,monkeypatch):
+    import argparse,sys
+    from trichodesmium import cli
+    package=tmp_path/'trichodesmium';assets=package/'assets';assets.mkdir(parents=True)
+    record={'git_commit':'recorded-source-revision','git_dirty':False,'program_version':'0.7.0'}
+    (assets/'linux-build-info.json').write_text(json.dumps(record))
+    monkeypatch.setattr(cli,'__file__',str(package/'cli.py'))
+    monkeypatch.setattr(sys,'frozen',True,raising=False)
+    result=cli.provenance(argparse.Namespace())
+    assert result['git_commit']==record['git_commit']
+    assert result['git_dirty'] is False and result['build']==record

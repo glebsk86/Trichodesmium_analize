@@ -56,7 +56,7 @@ def provenance(args):
     build = None
     if getattr(sys,"frozen",False):
         try:
-            build = json.loads(Path(__file__).with_name("assets").joinpath("build-info.json").read_text())
+            build = json.loads(Path(__file__).with_name("assets").joinpath("linux-build-info.json").read_text())
             revision = build.get("git_commit");dirty = build.get("git_dirty")
         except (OSError,ValueError):pass
     else:
