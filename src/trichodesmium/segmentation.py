@@ -113,10 +113,11 @@ def microscope_candidates(rgb, min_area=80, min_elongation=3.):
     return output, info
 
 
-@lru_cache(maxsize=1)
-def colour_kernels():
+@lru_cache(maxsize=8)
+def colour_kernels(widths=(6,10,14)):
     """Directional centre, dark edges and adjacent background bands."""
-    y, x = np.mgrid[-24:25, -24:25].astype(np.float32)
+    extent=max(24,int(max(widths)*.8+8))
+    y, x = np.mgrid[-extent:extent+1, -extent:extent+1].astype(np.float32)
     kernels = []
     for angle in np.arange(0, np.pi, np.pi/16):
         along = x*np.cos(angle)+y*np.sin(angle)
@@ -124,7 +125,7 @@ def colour_kernels():
         def band(offset, sigma):
             k = np.exp(-along*along/(2*7**2)-(across-offset)**2/(2*sigma*sigma))
             return (k/k.sum()).astype(np.float32)
-        for width in (6, 10, 14):
+        for width in widths:
             centre = band(0, width*.22)
             left, right = band(-width/2, 1.2), band(width/2, 1.2)
             outer_left, outer_right = band(-width/2-4, 2), band(width/2+4, 2)
@@ -133,7 +134,7 @@ def colour_kernels():
     return kernels
 
 
-def colour_evidence(rgb):
+def colour_evidence(rgb,widths=(6,10,14)):
     """Bilateral yellow/olive contrast, with a separate paired-edge seed score.
 
     Empirical camera-specific Lab units, not colour-independent identification.
@@ -144,7 +145,7 @@ def colour_evidence(rgb):
     luminance = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)/255
     contrast = np.zeros(luminance.shape, np.float32)
     paired = np.zeros_like(contrast)
-    for lc, rc, le, re in colour_kernels():
+    for lc, rc, le, re in colour_kernels(tuple(widths)):
         bilateral = np.minimum(cv2.filter2D(pigment, -1, lc),
                                cv2.filter2D(pigment, -1, rc))
         dark_edges = np.minimum(cv2.filter2D(luminance, -1, le),
@@ -245,3 +246,31 @@ def colour_assisted_candidates(rgb, min_area=80, min_elongation=3.):
                       "Nearby fragments can share an unverified ID; their gaps are not filled. "
                       "Mask boundaries and missed short/pale filaments require review."}
     return output, info
+
+
+def multiscale_colour_candidates(rgb,widths=(4,6,10,14,20,28,40)):
+    """Camera-adaptive bilateral proposals without a legacy forest veto.
+
+    A broad colour network is filtered by intrinsic skeleton length/width;
+    B still independently reviews the actual native-resolution boundaries.
+    """
+    contrast,paired=colour_evidence(rgb,widths)
+    field=field_mask(rgb)
+    support=(contrast>3.0)&field
+    seeds=(paired>5.0)&field
+    association=cv2.morphologyEx(support.astype(np.uint8),cv2.MORPH_CLOSE,
+                                  cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(5,5)))>0
+    output=np.zeros(support.shape,np.int32);accepted=0;rejected=0
+    for region in regionprops(label(association,connectivity=2)):
+        y0,x0,y1,x1=region.bbox
+        observed=region.image&support[y0:y1,x0:x1]
+        strong=int(np.sum(observed&seeds[y0:y1,x0:x1]))
+        if observed.sum()<250 or strong<80:rejected+=1;continue
+        skeleton=skeletonize(observed);extent=int(skeleton.sum())
+        width=medial_width(observed,skeleton) if extent else 0
+        if extent<120 or width>max(widths)*1.5 or extent/max(width,1)<8:
+            rejected+=1;continue
+        accepted+=1;output[y0:y1,x0:x1][observed]=accepted
+    return output,dict(profile='bilateral-multiscale-native-B-20261005',forest_veto=False,
+          widths_search_px=list(widths),contrast_threshold=3.0,paired_seed_threshold=5.0,
+          rejected_components=rejected,notice='Unverified colour/shape candidates; native B performs boundary review.')

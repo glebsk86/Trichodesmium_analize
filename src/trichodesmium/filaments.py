@@ -13,7 +13,7 @@ def associate_labels(labels,settings=TubeSettings()):
         y0,x0=max(0,int(yy.min())-1),max(0,int(xx.min())-1)
         y1,x1=min(labels.shape[0],int(yy.max())+2),min(labels.shape[1],int(xx.max())+2)
         mask=labels[y0:y1,x0:x1]==ident
-        paths,_,_=extract_spines(mask,replace(settings,min_spine_length_px=25.))
+        paths,_,_=extract_spines(mask,replace(settings,min_spine_length_px=25.*settings.pixel_density_factor))
         distance=distance_transform_edt(mask).astype(np.float32)
         for path in paths:
             if len(path)<6:continue

@@ -70,7 +70,10 @@ def parser():
     p.add_argument('--reference-distance-um',type=float)
     p.add_argument('--mask-dir',type=Path,help='Папка проверенных PNG масок вместо детектора')
     p.add_argument('--mask-format',choices=['auto','binary','instances'],default='auto')
-    p.add_argument('--working-width',type=int,default=960,help='Ширина рабочего B-растра; по умолчанию 960 px')
+    p.add_argument('--working-width',type=int,default=0,help='Ширина B-растра; 0 (по умолчанию) — исходное разрешение')
+    p.add_argument('--min-radius-um',type=float,default=1.5,help='Минимальный пробный радиус, мкм (при наличии шкалы)')
+    p.add_argument('--max-radius-um',type=float,default=12.,help='Максимальный пробный радиус, мкм (при наличии шкалы)')
+    p.add_argument('--patch-side-um',type=float,default=4.8,help='Сторона цветового окна, мкм; минимум 6 px')
     p.add_argument('--workers',type=int,default=0,help='Linux: число параллельных фото; 0 — авто, 1 — последовательно')
     p.add_argument('--limited-output',action='store_true',help='Только сводный HTML со встроенными картинками и CSV/XLSX')
     p.add_argument('--version',action='version',version=__version__)
@@ -81,7 +84,10 @@ def run(args):
     source = args.input.expanduser().resolve()
     output = (args.output or Path('results')/datetime.now().strftime('run-%Y%m%d-%H%M%S-%f')).expanduser().resolve()
     if output.exists():raise ValueError('Папка результата уже существует; выберите новое имя.')
-    if args.working_width<64:raise ValueError('Рабочая ширина должна быть не меньше 64 px.')
+    if args.working_width!=0 and args.working_width<64:raise ValueError('Рабочая ширина должна быть не меньше 64 px.')
+    import math
+    if not all(math.isfinite(v) and v>0 for v in (args.min_radius_um,args.max_radius_um,args.patch_side_um)) or args.min_radius_um>=args.max_radius_um:
+        raise ValueError('Радиусы и сторона окна должны быть положительными; минимальный радиус меньше максимального.')
     if args.workers<0:raise ValueError('--workers должен быть 0 или положительным числом.')
     seed_args = [str(source),'-o',str(output/'seed-report'),'--scale-mode',args.scale_mode]
     for flag,value in [('--um-per-pixel',args.um_per_pixel),('--reference',args.reference),

@@ -15,7 +15,8 @@ from .cli import provenance
 from .filaments import associate_labels
 from .imaging import read_image,read_labels,list_images,field_mask
 from .reporting import write_json
-from .segmentation import colour_assisted_candidates
+from .segmentation import multiscale_colour_candidates
+from .physical_settings import settings_for_photo
 from .tubular import TubeSettings,compare_proposal
 from .tube_compare import export_fit,contour,global_overlaps,comparison_sheet
 from .tube_guides import draw_guides,with_header,guide_label
@@ -122,8 +123,10 @@ def process_photo(job):
     started=time.perf_counter();timings={}
     try:
         original,decoding=read_image(source,return_metadata=True)
-        rgb=resized(original,options['working_width']);timings['decode_resize']=time.perf_counter()-started
+        rgb=original if not options['working_width'] else resized(original,options['working_width']);timings['decode_resize']=time.perf_counter()-started
         t=time.perf_counter();calibration,obstruction=calibrate(original,rgb,options);timings['calibration']=time.perf_counter()-t
+        settings,physical=settings_for_photo(calibration,[rgb.shape[1],rgb.shape[0]],options)
+        calibration['tube_parameters']=physical
         t=time.perf_counter()
         if options.get('mask_dir'):
             mask=Path(options['mask_dir'])/Path(relative).with_suffix('.png')
@@ -131,15 +134,21 @@ def process_photo(job):
             labels=cv2.resize(labels.astype(np.float32),(rgb.shape[1],rgb.shape[0]),interpolation=cv2.INTER_NEAREST).astype(np.int32)
             segmentation={'profile':'imported_mask','automatic_fragment_association':False};links=[]
         else:
-            labels,segmentation=colour_assisted_candidates(rgb)
-            labels,links=associate_labels(labels)
+            search=resized(rgb,min(rgb.shape[1],960))
+            factor=search.shape[1]/rgb.shape[1]
+            low=max(3,settings.min_width_px*factor);high=min(60,max(low+1,settings.max_width_px*factor))
+            widths=tuple(sorted(set(round(v,1) for v in np.geomspace(low,high,7))))
+            labels,segmentation=multiscale_colour_candidates(search,widths)
+            segmentation['search_size_xy']=[search.shape[1],search.shape[0]]
+            labels=cv2.resize(labels.astype(np.float32),(rgb.shape[1],rgb.shape[0]),interpolation=cv2.INTER_NEAREST).astype(np.int32)
+            labels,links=associate_labels(labels,settings)
             segmentation['input_normalization']={'original_size_xy':[original.shape[1],original.shape[0]],'analysis_size_xy':[rgb.shape[1],rgb.shape[0]]}
         timings['segmentation_association']=time.perf_counter()-t
         t=time.perf_counter()
         export=write_result
         if options.get('limited_output'):
             from .compact_report import write_result as export
-        row=export(output,source,relative,ordinal,original,rgb,decoding,labels,obstruction,calibration,TubeSettings(),segmentation,links)
+        row=export(output,source,relative,ordinal,original,rgb,decoding,labels,obstruction,calibration,settings,segmentation,links)
         timings['B_refinement_export']=time.perf_counter()-t;timings['total']=time.perf_counter()-started;row['timings_seconds']=timings
         return {'image':row}
     except (OSError,ValueError,KeyError) as exc:
@@ -147,7 +156,7 @@ def process_photo(job):
 
 
 def jobs_for(args,output,reference_calibration=None,reference_size=None):
-    options=dict(working_width=args.working_width,scale_mode=args.scale_mode,um_per_pixel=args.um_per_pixel,
+    options=dict(min_radius_um=args.min_radius_um,max_radius_um=args.max_radius_um,patch_side_um=args.patch_side_um,working_width=args.working_width,scale_mode=args.scale_mode,um_per_pixel=args.um_per_pixel,
                  mask_dir=args.mask_dir,mask_format=args.mask_format,limited_output=getattr(args,'limited_output',False),
                  reference_calibration=reference_calibration,reference_size_xy=reference_size)
     paths=sorted(list_images(args.input,args.recursive),key=lambda p:natural_key(p.relative_to(args.input).as_posix()))
@@ -169,7 +178,7 @@ def run_batch(args,reference_calibration=None,reference_size=None):
     args.effective_workers=workers
     output.mkdir(parents=True);started=time.perf_counter()
     manifest=provenance(args);manifest.update(algorithm='B',experiment='B-continuous-filaments',settings=asdict(TubeSettings()),
-          working_coordinates='EXIF-oriented; normalized RGB8 raster, independent of container format',
+          working_coordinates='EXIF-oriented; normalized RGB8 raster, independent of container format; per-image physical settings in calibration.tube_parameters',
           weight_notice='Relative fit scores, not species probabilities',images=[],duplicates=[],errors=[])
     seen={}
     results=execute_parallel(jobs,workers) if workers>1 else execute(jobs)

@@ -56,6 +56,10 @@ def build_report(output,manifest):
     for row in manifest['images']:
         factors=row['calibration']['working_um_per_px_xy']
         caption='Масштаб не определён; доступны только px.' if factors is None else f'Масштаб: {factors[0]:.4f} × {factors[1]:.4f} мкм/рабочий px; требует проверки.'
+        parameters=row['calibration'].get('tube_parameters')
+        if parameters:
+            k=parameters['patch_side_px'];caption+=f' Окна цвета: {k}×{k} px.'
+            caption+=' Радиусы в мкм по шкале.' if parameters['origin']=='physical_um' else ' Радиусы в px: шкала не найдена.'
         check=row['calibration']['consistency']
         if check['status']=='outlier_requires_review':caption+=' Отклонение масштаба в группе разрешения — проверить шкалу.'
         parts.extend(['<section>',f'<p>{html.escape(caption)}</p>',row.pop('compact_html'),'</section>'])

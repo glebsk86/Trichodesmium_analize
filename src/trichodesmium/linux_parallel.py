@@ -30,7 +30,7 @@ def available_workers(requested,count):
             info=dict(line.split(':',1) for line in Path('/proc/meminfo').read_text().splitlines())
             free=int(info['MemAvailable'].split()[0])*1024
         # Conservative budget per working photo plus a parent/UI reserve.
-        memory=max(1,(free-512*2**20)//(768*2**20))
+        memory=max(1,(free-512*2**20)//(2048*2**20))
     except (OSError,ValueError,KeyError):pass
     return max(1,min(count,cpu,memory,4))
 

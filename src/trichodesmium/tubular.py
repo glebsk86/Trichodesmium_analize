@@ -19,7 +19,8 @@ from skimage.morphology import skeletonize
 class TubeSettings:
     min_width_px: float = 4.0  # Trial limit at WORKING resolution, not a species standard.
     max_width_px: float = 30.0
-    patch_side_px: int = 2
+    patch_side_px: int = 6
+    pixel_density_factor: float = 1.0
     association_px: int = 5
     min_spine_length_px: float = 60.0
     max_local_turn_deg: float = 65.0
@@ -37,8 +38,10 @@ class TubeSettings:
     def validate(self):
         if not 0 < self.min_width_px < self.max_width_px:
             raise ValueError("Require 0 < min-width < max-width")
-        if not 1 < self.patch_side_px < self.min_width_px:
-            raise ValueError("Square patch must span multiple pixels and be smaller than min-width")
+        if self.patch_side_px<6 or not isinstance(self.patch_side_px,int):
+            raise ValueError("Colour square must be at least 6×6 pixels")
+        if not np.isfinite(self.pixel_density_factor) or self.pixel_density_factor<=0:
+            raise ValueError('Pixel density factor must be positive and finite')
         if not np.isfinite(self.smoothness_weight) or self.smoothness_weight < 0:
             raise ValueError("Smoothness weight must be finite and nonnegative")
         return self
@@ -63,13 +66,14 @@ def resample_spine(xy, step=2.):
     return np.column_stack([np.interp(targets, s, xy[:, c]) for c in range(2)])
 
 
-def smooth_spine(xy):
-    xy = resample_spine(xy)
+def smooth_spine(xy,density=1.,width_px=None):
+    xy = resample_spine(xy,2.*density)
     if len(xy) < 5:
         return xy
-    result = gaussian_filter1d(xy, 1.5, axis=0, mode="nearest")
+    sigma=max(1.5,0.35*(width_px or 0)/(2*density))
+    result = gaussian_filter1d(xy, sigma, axis=0, mode="nearest")
     result[0], result[-1] = xy[0], xy[-1]
-    return resample_spine(result)
+    return resample_spine(result,2.*density)
 
 
 def normals(xy):
@@ -78,8 +82,8 @@ def normals(xy):
     return np.c_[-tangent[:, 1], tangent[:, 0]]
 
 
-def local_turn(xy):
-    p = resample_spine(xy, 5.)
+def local_turn(xy,density=1.):
+    p = resample_spine(xy, 5.*density)
     if len(p) < 5:
         return 0.
     a, b = p[2:-2]-p[:-4], p[4:]-p[2:-2]
@@ -88,9 +92,9 @@ def local_turn(xy):
     return float(np.max(np.degrees(np.arccos(np.clip(np.sum(a*b, axis=1), -1, 1)))))
 
 
-def curvature_width(xy, width):
+def curvature_width(xy, width,density=1.):
     """Robust bend severity over 10-pixel spans; reject tight folded blobs."""
-    p = resample_spine(xy, 5.)
+    p = resample_spine(xy, 5.*density)
     if len(p) < 5:
         return 0.
     a, b = p[2:-2]-p[:-4], p[4:]-p[2:-2]
@@ -199,7 +203,7 @@ def join_fragments(paths, settings):
         b = paths[j][::-1] if rj else paths[j]
         gaps.append([a[-1].tolist(),b[0].tolist()])
         bridge = np.linspace(a[-1],b[0],max(3,int(np.linalg.norm(a[-1]-b[0])/2)))[1:-1]
-        joined = smooth_spine(np.vstack([a,bridge,b]))
+        joined = smooth_spine(np.vstack([a,bridge,b]),settings.pixel_density_factor)
         paths = [p for k,p in enumerate(paths) if k not in (i,j)]+[joined]
     return paths,gaps
 
@@ -217,7 +221,7 @@ def extract_spines(source, settings):
         mask = np.pad(region.image,1)
         sk = skeletonize(mask)
         radius = float(np.median(distance_transform_edt(mask)[sk]))
-        coords,graph,matrix = skeleton_graph(mask,min(20.,max(6.,radius*2.5)))
+        coords,graph,matrix = skeleton_graph(mask,min(20.*settings.pixel_density_factor,max(6.*settings.pixel_density_factor,radius*2.5)))
         ends = [i for i,g in enumerate(graph) if len(g)==1]
         if len(ends) < 2:
             cases.append("closed_or_no_resolvable_axis")
@@ -239,15 +243,15 @@ def extract_spines(source, settings):
                     if predecessor < 0:break
                     nodes.append(predecessor)
                 if nodes[-1] != ends[a]:continue
-                xy = smooth_spine(coords[nodes[::-1]][:,::-1]+offset)
-                turn = local_turn(xy)
+                xy = smooth_spine(coords[nodes[::-1]][:,::-1]+offset,settings.pixel_density_factor,2*radius)
+                turn = local_turn(xy,settings.pixel_density_factor)
                 if turn > settings.max_local_turn_deg:
                     continue
                 candidates.append((float(length)/(1+turn/90),xy))
         occupied = np.zeros(source.shape,np.uint8)
         for _,xy in sorted(candidates,key=lambda p:p[0],reverse=True):
             novel = sample(occupied,xy,0)==0
-            if np.mean(novel) < .65 or novel.sum()*2 < settings.min_spine_length_px:
+            if np.mean(novel) < .65 or novel.sum()*2*settings.pixel_density_factor < settings.min_spine_length_px:
                 continue
             paths.append(xy)
             cv2.polylines(occupied,[np.rint(xy).astype(np.int32)],False,1,
@@ -270,6 +274,7 @@ class BoundaryEvidence:
         # Even box kernels have their centroid half a pixel before the anchor.
         self.box_shift = .5 if k%2==0 else 0.
         self.offset = math.sqrt(2)*(k-1)/2+.65
+        self.score_distance = 2*self.offset/settings.pixel_density_factor
 
     def edge_scores(self,xy,norm,radii,side,kind):
         centres = xy[:,None,:]+side*radii[None,:,None]*norm[:,None,:]
@@ -278,9 +283,9 @@ class BoundaryEvidence:
         a = sample(self.patch_lab,inside+self.box_shift)
         b = sample(self.patch_lab,outside+self.box_shift)
         delta = a-b
-        gradient = np.linalg.norm(delta,axis=-1)/(2*self.offset)
+        gradient = np.linalg.norm(delta,axis=-1)/self.score_distance
         signed_pigment = delta[...,2]-.7*delta[...,1]
-        score = .55*gradient+.45*signed_pigment/(2*self.offset)
+        score = .55*gradient+.45*signed_pigment/self.score_distance
         valid = (sample(self.field,inside,0)>.5)&(sample(self.field,outside,0)>.5)
         return np.where(valid,score,-1e3)
 
@@ -290,7 +295,7 @@ def choose_edges(evidence,xy,radius,kind):
     s = evidence.settings
     low = max(s.min_width_px/2,radius*.65)
     high = min(s.max_width_px/2,radius*1.35)
-    radii = np.linspace(low,max(low+.1,high),17)
+    radii = np.linspace(low,max(low,high),17)
     chosen,raw,scores = [],[],[]
     for side in (-1,1):
         image_score = evidence.edge_scores(xy,n,radii,side,kind)
@@ -306,7 +311,7 @@ def choose_edges(evidence,xy,radius,kind):
         inside = positions-side*evidence.offset*n
         outside = positions+side*evidence.offset*n
         delta = sample(evidence.patch_lab,inside+evidence.box_shift)-sample(evidence.patch_lab,outside+evidence.box_shift)
-        score = .55*np.linalg.norm(delta,axis=-1)/(2*evidence.offset)+.45*(delta[:,2]-.7*delta[:,1])/(2*evidence.offset)
+        score = .55*np.linalg.norm(delta,axis=-1)/evidence.score_distance+.45*(delta[:,2]-.7*delta[:,1])/evidence.score_distance
         valid = (sample(evidence.field,inside,0)>.5)&(sample(evidence.field,outside,0)>.5)
         scores.append(np.where(valid,score,-1e3))
     return chosen,raw,scores
@@ -354,7 +359,8 @@ def fit_hypothesis(evidence,source,xy,initial_radius,obstruction,kind,shift=0.,f
     threshold = s.min_lab_gradient
     border_supported = np.minimum(scores[0],scores[1])>=threshold
     blocked = sample(obstruction,shifted,0)>.5
-    observed = border_supported&~blocked
+    window_fits = (chosen[0]+chosen[1])>=2*evidence.offset
+    observed = border_supported&window_fits&~blocked
     if source_distance is None:source_distance=distance_transform_edt(~source).astype(np.float32)
     near_source = sample(source_distance,shifted)<=max(3.,radius)
     # Reject a contrast fit which slid away from the common proposal.
@@ -374,10 +380,11 @@ def fit_hypothesis(evidence,source,xy,initial_radius,obstruction,kind,shift=0.,f
     smoothness_bonus = s.smoothness_weight*shape["boundary_regularity"]
     objective = base_objective+smoothness_bonus
     reasons=[]
+    if np.mean(window_fits)<s.min_supported_fraction:reasons.append("colour_square_too_large_for_tube_width")
     if fraction<s.min_supported_fraction:reasons.append("insufficient_bilateral_boundary_support")
     if width_mad>s.max_width_relative_mad:reasons.append("observed_width_inconsistent")
     if geometric_length/max(median,1)<6:reasons.append("too_short_for_width")
-    bend = curvature_width(shifted,median)
+    bend = curvature_width(shifted,median,s.pixel_density_factor)
     if bend>s.max_curvature_width:reasons.append("bend_too_tight_for_width")
     return {"template":template,"supported":supported,"length_support":template&source_dilated&~obstruction&evidence.field,"axis_xy":shifted,
             "left_radius_px":chosen[0],"right_radius_px":chosen[1],"supported_sections":observed,
@@ -486,7 +493,7 @@ def compare_proposal(rgb,source,field,obstruction,settings=TubeSettings()):
     """Fit on a padded local crop; restore full-frame export coordinates."""
     yy,xx=np.nonzero(source)
     if not len(xx):return _compare_local(rgb,source,field,obstruction,settings)
-    pad=int(settings.max_width_px+6)
+    pad=int(settings.max_width_px+settings.patch_side_px*2+6)
     x0,y0=max(0,int(xx.min())-pad),max(0,int(yy.min())-pad)
     x1,y1=min(source.shape[1],int(xx.max())+pad+1),min(source.shape[0],int(yy.max())+pad+1)
     crop=np.s_[y0:y1,x0:x1]
@@ -503,7 +510,10 @@ def compare_proposal(rgb,source,field,obstruction,settings=TubeSettings()):
         for key in ('crossing_mask','ambiguous_mask'):method[key]=expand(method[key])
         for fit in method['fits']:
             for record in [fit,*fit['variants']]:
-                for key in ('template','supported','length_support'):record[key]=expand(record[key])
+                # Variant observation masks stay local and are never exported;
+                # only the selected fit needs full-frame observation masks.
+                for key in ('template','supported','length_support') if record is fit else ('template',):
+                    record[key]=expand(record[key])
                 record['axis_xy']=expand(record['axis_xy'],True)
     result['template_gap_links_xy']=[(np.asarray(link)+offset).tolist() for link in result['template_gap_links_xy']]
     return result
