@@ -1,7 +1,7 @@
 """Physical scale for the tube experiment, with explicit raster transforms."""
 import copy
 import numpy as np
-from .calibration import analyse_axis, ruler_axes, positive
+from .calibration import analyse_axis, ruler_axes, positive, ruler_analysis
 
 FINE_METHOD = 'spectrum_with_individual_tick_support'
 
@@ -15,6 +15,7 @@ def windowed_fine_scale(rgb, tick_um=3., ruler_length_um=600.):
     tick_um = positive(tick_um,"tick_um")
     ruler_length_um = positive(ruler_length_um,"ruler_length_um")
     axes = []
+    analysis=ruler_analysis(rgb)
     for p0,p1 in ruler_axes(rgb):
         length = np.linalg.norm(p1-p0)
         direction = (p1-p0)/length
@@ -24,7 +25,7 @@ def windowed_fine_scale(rgb, tick_um=3., ruler_length_um=600.):
             choices = []
             for offset in (-2.,0.,2.):
                 a = analyse_axis(rgb,p0+direction*start+normal*offset,
-                                 p0+direction*(start+240)+normal*offset)
+                                 p0+direction*(start+240)+normal*offset,analysis)
                 if a and a.get('spacing_method') == FINE_METHOD:
                     a.update(window_start_px=float(start), normal_offset_px=offset)
                     choices.append(a)

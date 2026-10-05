@@ -91,7 +91,7 @@ def test_geometrically_good_but_invisible_proposal_fails_both_methods():
     mask=np.zeros((150,340),np.uint8);cv2.line(mask,(30,75),(300,75),1,10)
     rgb=np.full((*mask.shape,3),(190,185,160),np.uint8)
     result=compare_proposal(rgb,mask>0,np.ones(mask.shape,bool),np.zeros(mask.shape,bool))
-    assert set(result['methods'])=={'single','ensemble'}
+    assert set(result['methods'])=={'ensemble'}
     for method in result['methods'].values():
         assert method['status']=='rejected'
         assert method['source_coverage']==0
@@ -148,8 +148,7 @@ def test_smoothness_can_be_disabled_without_changing_point_baseline():
     mask=np.zeros((150,340),np.uint8);cv2.line(mask,(30,75),(300,75),1,10)
     zero=compare_proposal(painted(mask>0),mask>0,np.ones(mask.shape,bool),np.zeros(mask.shape,bool),TubeSettings(smoothness_weight=0))
     revised=compare_proposal(painted(mask>0),mask>0,np.ones(mask.shape,bool),np.zeros(mask.shape,bool))
-    np.testing.assert_array_equal(zero['methods']['single']['fits'][0]['template'],revised['methods']['single']['fits'][0]['template'])
-    assert zero['methods']['single']['fits'][0]['objective']==revised['methods']['single']['fits'][0]['objective']
+    assert set(zero['methods'])=={'ensemble'}
     assert zero['methods']['ensemble']['fits'][0]['smoothness_bonus']==0
     assert revised['methods']['ensemble']['fits'][0]['smoothness_bonus']>2.9
     with pytest.raises(ValueError):TubeSettings(smoothness_weight=-1).validate()

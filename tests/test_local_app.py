@@ -27,7 +27,7 @@ def test_one_command_emits_b_values_tables_and_refuses_overwrite(tmp_path):
     assert len(rows)==2
     assert float(rows[1][3])==fit['measurement_guides']['length_um']
     assert float(rows[1][4])==fit['measurement_guides']['width_um']
-    assert rows[1][-3:]==['не определён','','']
+    assert rows[1][11:14]==['не определён','','']
     assert (output/'B-measurements.xlsx').exists()
     assert 'report/index.html' in (output/'index.html').read_text()
     assert main(args)==2
@@ -62,7 +62,7 @@ def test_frozen_provenance_reads_bundled_build_record(tmp_path,monkeypatch):
     import argparse,sys
     from trichodesmium import cli
     package=tmp_path/'trichodesmium';assets=package/'assets';assets.mkdir(parents=True)
-    record={'git_commit':'recorded-source-revision','git_dirty':False,'program_version':'0.7.0'}
+    record={'git_commit':'recorded-source-revision','git_dirty':False,'program_version':'0.8.0'}
     (assets/'linux-build-info.json').write_text(json.dumps(record))
     monkeypatch.setattr(cli,'__file__',str(package/'cli.py'))
     monkeypatch.setattr(sys,'frozen',True,raising=False)

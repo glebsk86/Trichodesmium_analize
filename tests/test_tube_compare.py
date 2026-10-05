@@ -36,8 +36,8 @@ def test_report_preserves_sources_weights_and_rejects_overwrite(tmp_path):
     assert details['length_um'] is None and details['width_um'] is None
     assert len(details['variants'])==7
     assert sum(v['relative_fit_weight'] for v in details['variants'])==pytest.approx(1)
-    assert (directory/'comparison.jpg').is_file()
-    assert (directory/'ensemble-measurements.jpg').is_file()
+    assert (directory/'diagnostics.jpg').is_file()
+    assert (directory/'B-measurements.png').is_file()
     assert (directory/'proposal-01/ensemble/spine-01/measurement_overlay.jpg').is_file()
     guides=details['measurement_guides']
     assert guides['visible_axis_length_px'] is not None

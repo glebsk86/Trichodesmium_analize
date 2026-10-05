@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trichodesmium-morphometry"
-version = "0.7.0"
+version = "0.8.0"
 description = "Reviewable experimental bright-field filament morphometry"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.24,<3", "scipy>=1.10,<2", "opencv-python-headless>=4.8,<5", "scikit-image>=0.22,<1", "Pillow>=11.1,<13", "pillow-heif>=1,<2", "openpyxl>=3.1,<4"]
@@ -13,9 +13,10 @@ dependencies = ["numpy>=1.24,<3", "scipy>=1.10,<2", "opencv-python-headless>=4.8
 dev = ["pytest>=8,<10"]
 
 [project.scripts]
-trichodesmium = "trichodesmium.cli:main"
+trichodesmium = "trichodesmium.local_app:main"
+trichodesmium-seeds = "trichodesmium.cli:main"
 trichodesmium-local = "trichodesmium.local_app:main"
-trichodesmium-compare-tubes = "trichodesmium.tube_compare:main"
+
 
 [tool.setuptools.packages.find]
 where = ["src"]

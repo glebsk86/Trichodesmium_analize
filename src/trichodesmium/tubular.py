@@ -1,8 +1,7 @@
 """Experimental tube priors. Templates are hypotheses, not measured tissue.
 
-A: one smooth spine and a width prior, refined using pigment contrast.
 B: multiple centre/width hypotheses, ranked by two-sided square-patch Lab
-gradients. The same source proposals and extracted spines are used by both.
+gradients. Algorithm A is retained only in historical Git branches.
 """
 from dataclasses import asdict, dataclass
 import math
@@ -25,7 +24,7 @@ class TubeSettings:
     min_spine_length_px: float = 60.0
     max_local_turn_deg: float = 65.0
     max_endpoints: int = 24
-    max_gap_px: float = 35.0
+    max_gap_px: float = 80.0
     min_supported_fraction: float = .50
     min_proposal_coverage: float = .55
     min_pigment_difference: float = .6
@@ -47,7 +46,7 @@ class TubeSettings:
 
 def sample(array, xy, order=1):
     if array.ndim == 2:
-        return map_coordinates(array.astype(np.float32), [xy[..., 1], xy[..., 0]],
+        return map_coordinates(array.astype(np.float32,copy=False), [xy[..., 1], xy[..., 0]],
                                order=order, mode="constant", cval=0)
     return np.stack([sample(array[..., c], xy, order) for c in range(array.shape[-1])], axis=-1)
 
@@ -244,11 +243,11 @@ def extract_spines(source, settings):
                 turn = local_turn(xy)
                 if turn > settings.max_local_turn_deg:
                     continue
-                candidates.append((float(length)/(1+turn/35),xy))
+                candidates.append((float(length)/(1+turn/90),xy))
         occupied = np.zeros(source.shape,np.uint8)
         for _,xy in sorted(candidates,key=lambda p:p[0],reverse=True):
             novel = sample(occupied,xy,0)==0
-            if np.mean(novel) < .30 or novel.sum()*2 < settings.min_spine_length_px:
+            if np.mean(novel) < .65 or novel.sum()*2 < settings.min_spine_length_px:
                 continue
             paths.append(xy)
             cv2.polylines(occupied,[np.rint(xy).astype(np.int32)],False,1,
@@ -276,15 +275,12 @@ class BoundaryEvidence:
         centres = xy[:,None,:]+side*radii[None,:,None]*norm[:,None,:]
         inside = centres-side*self.offset*norm[:,None,:]
         outside = centres+side*self.offset*norm[:,None,:]
-        if kind == "single":
-            score = sample(self.pigment,inside)-sample(self.pigment,outside)
-        else:
-            a = sample(self.patch_lab,inside+self.box_shift)
-            b = sample(self.patch_lab,outside+self.box_shift)
-            delta = a-b
-            gradient = np.linalg.norm(delta,axis=-1)/(2*self.offset)
-            signed_pigment = delta[...,2]-.7*delta[...,1]
-            score = .55*gradient+.45*signed_pigment/(2*self.offset)
+        a = sample(self.patch_lab,inside+self.box_shift)
+        b = sample(self.patch_lab,outside+self.box_shift)
+        delta = a-b
+        gradient = np.linalg.norm(delta,axis=-1)/(2*self.offset)
+        signed_pigment = delta[...,2]-.7*delta[...,1]
+        score = .55*gradient+.45*signed_pigment/(2*self.offset)
         valid = (sample(self.field,inside,0)>.5)&(sample(self.field,outside,0)>.5)
         return np.where(valid,score,-1e3)
 
@@ -309,11 +305,8 @@ def choose_edges(evidence,xy,radius,kind):
         positions = xy+side*smooth[:,None]*n
         inside = positions-side*evidence.offset*n
         outside = positions+side*evidence.offset*n
-        if kind=="single":
-            score = sample(evidence.pigment,inside)-sample(evidence.pigment,outside)
-        else:
-            delta = sample(evidence.patch_lab,inside+evidence.box_shift)-sample(evidence.patch_lab,outside+evidence.box_shift)
-            score = .55*np.linalg.norm(delta,axis=-1)/(2*evidence.offset)+.45*(delta[:,2]-.7*delta[:,1])/(2*evidence.offset)
+        delta = sample(evidence.patch_lab,inside+evidence.box_shift)-sample(evidence.patch_lab,outside+evidence.box_shift)
+        score = .55*np.linalg.norm(delta,axis=-1)/(2*evidence.offset)+.45*(delta[:,2]-.7*delta[:,1])/(2*evidence.offset)
         valid = (sample(evidence.field,inside,0)>.5)&(sample(evidence.field,outside,0)>.5)
         scores.append(np.where(valid,score,-1e3))
     return chosen,raw,scores
@@ -349,7 +342,7 @@ def render_tube(shape,xy,left,right,valid=None,tip_support=None):
     return mask>0
 
 
-def fit_hypothesis(evidence,source,xy,initial_radius,obstruction,kind,shift=0.,factor=1.):
+def fit_hypothesis(evidence,source,xy,initial_radius,obstruction,kind,shift=0.,factor=1.,source_distance=None,source_dilated=None):
     s = evidence.settings
     shifted = xy+shift*normals(xy)
     radius = float(np.clip(initial_radius*factor,s.min_width_px/2,s.max_width_px/2))
@@ -358,15 +351,17 @@ def fit_hypothesis(evidence,source,xy,initial_radius,obstruction,kind,shift=0.,f
     median = float(np.median(widths))
     width_mad = float(np.median(abs(widths-median))/max(median,1))
     template = render_tube(source.shape,shifted,*chosen,tip_support=source)
-    threshold = s.min_pigment_difference if kind=="single" else s.min_lab_gradient
+    threshold = s.min_lab_gradient
     border_supported = np.minimum(scores[0],scores[1])>=threshold
     blocked = sample(obstruction,shifted,0)>.5
     observed = border_supported&~blocked
-    near_source = sample(distance_transform_edt(~source),shifted)<=max(3.,radius)
+    if source_distance is None:source_distance=distance_transform_edt(~source).astype(np.float32)
+    near_source = sample(source_distance,shifted)<=max(3.,radius)
     # Reject a contrast fit which slid away from the common proposal.
     observed &= near_source
     supported = render_tube(source.shape,shifted,*chosen,valid=observed,tip_support=source)&~obstruction&evidence.field
-    supported &= cv2.dilate(source.astype(np.uint8),cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(9,9)))>0
+    if source_dilated is None:source_dilated=cv2.dilate(source.astype(np.uint8),cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(9,9)))>0
+    supported &= source_dilated
     outside = ~blocked
     fraction = float(np.mean(observed[outside])) if outside.any() else 0.
     gradient = float(np.mean(np.clip(np.minimum(scores[0],scores[1]),-5,20)[outside])) if outside.any() else -5.
@@ -376,7 +371,7 @@ def fit_hypothesis(evidence,source,xy,initial_radius,obstruction,kind,shift=0.,f
     # All seven variants share one reference width: merely shrinking the mask
     # must not win extra points through its normalization denominator.
     shape = boundary_regularity(shifted,*chosen,reference_width_px=2*initial_radius)
-    smoothness_bonus = s.smoothness_weight*shape["boundary_regularity"] if kind=="ensemble" else 0.
+    smoothness_bonus = s.smoothness_weight*shape["boundary_regularity"]
     objective = base_objective+smoothness_bonus
     reasons=[]
     if fraction<s.min_supported_fraction:reasons.append("insufficient_bilateral_boundary_support")
@@ -384,7 +379,7 @@ def fit_hypothesis(evidence,source,xy,initial_radius,obstruction,kind,shift=0.,f
     if geometric_length/max(median,1)<6:reasons.append("too_short_for_width")
     bend = curvature_width(shifted,median)
     if bend>s.max_curvature_width:reasons.append("bend_too_tight_for_width")
-    return {"template":template,"supported":supported,"axis_xy":shifted,
+    return {"template":template,"supported":supported,"length_support":template&source_dilated&~obstruction&evidence.field,"axis_xy":shifted,
             "left_radius_px":chosen[0],"right_radius_px":chosen[1],"supported_sections":observed,
             "scores":scores,"objective":objective,"supported_fraction":fraction,
             "median_proposed_width_px":median,"raw_width_relative_mad":width_mad,
@@ -403,12 +398,11 @@ def fit_spine(evidence,source,xy,obstruction,kind):
     estimates = estimates[estimates>=evidence.settings.min_width_px/2]
     radius = float(np.median(estimates)) if len(estimates) else evidence.settings.min_width_px/2
     radius = float(np.clip(radius,evidence.settings.min_width_px/2,evidence.settings.max_width_px/2))
-    if kind=="single":
-        variants=[fit_hypothesis(evidence,source,xy,radius,obstruction,kind)]
-    else:
-        variants=[fit_hypothesis(evidence,source,xy,radius,obstruction,kind,shift,factor)
-                  for shift,factor in ((0.,.75),(0.,.9),(0.,1.),(0.,1.15),(0.,1.3),
-                                       (-radius*.25,1.),(radius*.25,1.))]
+    source_distance=distance_transform_edt(~source).astype(np.float32)
+    source_dilated=cv2.dilate(source.astype(np.uint8),cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(9,9)))>0
+    variants=[fit_hypothesis(evidence,source,xy,radius,obstruction,"ensemble",shift,factor,source_distance,source_dilated)
+              for shift,factor in ((0.,.75),(0.,.9),(0.,1.),(0.,1.15),(0.,1.3),
+                                   (-radius*.25,1.),(radius*.25,1.))]
     objective=np.array([v["objective"] for v in variants])
     weights=np.exp(np.clip(objective-objective.max(),-30,0));weights/=weights.sum()
     for v,w in zip(variants,weights):v["relative_fit_weight"]=float(w)
@@ -416,7 +410,7 @@ def fit_spine(evidence,source,xy,obstruction,kind):
     winner=max(eligible,key=lambda i:objective[i]) if eligible else int(np.argmax(objective))
     result=dict(variants[winner])
     result["selected_variant"]=winner
-    result["variants"]=variants if kind=="ensemble" else []
+    result["variants"]=variants
     return result
 
 
@@ -443,12 +437,12 @@ def pair_overlap(first,second,settings):
     return overlap,kind,angle
 
 
-def compare_proposal(rgb,source,field,obstruction,settings=TubeSettings()):
+def _compare_local(rgb,source,field,obstruction,settings=TubeSettings()):
     settings.validate()
     paths,axis_cases,gaps=extract_spines(source,settings)
     evidence=BoundaryEvidence(rgb,field,settings)
     results={}
-    for kind in ("single","ensemble"):
+    for kind in ("ensemble",):
         fits=[fit_spine(evidence,source,xy,obstruction,kind) for xy in paths]
         union=np.zeros(source.shape,bool)
         active=[f for f in fits if not f["reasons"]]
@@ -480,8 +474,36 @@ def compare_proposal(rgb,source,field,obstruction,settings=TubeSettings()):
         for fit in fits:
             fit["status"]="rejected" if fit["reasons"] else "accepted_candidate"
             fit["supported"] &= ~ambiguous
+            fit["length_support"] &= ~ambiguous
         results[kind]={"fits":fits,"source_coverage":source_coverage,"status":status,
                        "reasons":reasons,"crossing_mask":crossing,
                        "ambiguous_mask":ambiguous,"overlap_pairs":pairs}
     return {"axis_cases":axis_cases,"template_gap_links_xy":gaps,"methods":results,
             "settings":asdict(settings)}
+
+
+def compare_proposal(rgb,source,field,obstruction,settings=TubeSettings()):
+    """Fit on a padded local crop; restore full-frame export coordinates."""
+    yy,xx=np.nonzero(source)
+    if not len(xx):return _compare_local(rgb,source,field,obstruction,settings)
+    pad=int(settings.max_width_px+6)
+    x0,y0=max(0,int(xx.min())-pad),max(0,int(yy.min())-pad)
+    x1,y1=min(source.shape[1],int(xx.max())+pad+1),min(source.shape[0],int(yy.max())+pad+1)
+    crop=np.s_[y0:y1,x0:x1]
+    result=_compare_local(rgb[crop],source[crop],field[crop],obstruction[crop],settings)
+    offset=np.array([x0,y0]);cache={}
+    def expand(array,coordinate=False):
+        key=(id(array),coordinate)
+        if key not in cache:
+            if coordinate:cache[key]=array+offset
+            else:
+                full=np.zeros(source.shape,array.dtype);full[crop]=array;cache[key]=full
+        return cache[key]
+    for method in result['methods'].values():
+        for key in ('crossing_mask','ambiguous_mask'):method[key]=expand(method[key])
+        for fit in method['fits']:
+            for record in [fit,*fit['variants']]:
+                for key in ('template','supported','length_support'):record[key]=expand(record[key])
+                record['axis_xy']=expand(record['axis_xy'],True)
+    result['template_gap_links_xy']=[(np.asarray(link)+offset).tolist() for link in result['template_gap_links_xy']]
+    return result

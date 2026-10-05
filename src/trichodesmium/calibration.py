@@ -74,9 +74,16 @@ def ruler_axes(rgb):
     return distinct
 
 
-def analyse_axis_discrete(rgb, p0, p1):
+def ruler_analysis(rgb):
+    gray=cv2.cvtColor(rgb,cv2.COLOR_RGB2GRAY).astype(np.float32)/255
+    saturation=cv2.cvtColor(rgb,cv2.COLOR_RGB2HSV)[...,1].astype(np.float32)/255
+    return {"gray":gray,"ink":(1-gray)*((gray<.55)&(saturation<.35))}
+
+
+def analyse_axis_discrete(rgb, p0, p1, analysis=None):
     """Sample outside the continuous axis, where transverse ticks recur."""
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(float) / 255
+    analysis = ruler_analysis(rgb) if analysis is None else analysis
+    gray = analysis["gray"]
     length = float(np.linalg.norm(p1-p0))
     direction = (p1-p0) / length
     normal = np.array([-direction[1], direction[0]])
@@ -85,8 +92,7 @@ def analyse_axis_discrete(rgb, p0, p1):
     xy = p0[:, None, None] + direction[:, None, None]*t[None, None, :] + normal[:, None, None]*offsets[None, :, None]
     # Ruler ink should be dark and approximately achromatic. Pigmented cell
     # septa must not become a ruler merely because they repeat regularly.
-    saturation=cv2.cvtColor(rgb,cv2.COLOR_RGB2HSV)[...,1]/255
-    ink=(1-gray)*((gray<.55)&(saturation<.35))
+    ink=analysis["ink"]
     samples = map_coordinates(ink, [xy[1], xy[0]], order=1, mode="constant", cval=0)
     profile = gaussian_filter1d(np.mean(samples, axis=0), .7)
     baseline = gaussian_filter1d(profile, 15)
@@ -124,13 +130,14 @@ def analyse_axis_discrete(rgb, p0, p1):
             "fundamental_fraction": fundamental, "profile": profile.tolist()}
 
 
-def analyse_axis(rgb,p0,p1):
+def analyse_axis(rgb,p0,p1,analysis=None):
     """Resolve blurred fine ticks; require individual tick-spacing support.
 
     A Fourier harmonic of coarse marks is NOT accepted on spectral power alone.
     The supporting peak gaps must predominantly equal the proposed interval.
     """
-    gray=cv2.cvtColor(rgb,cv2.COLOR_RGB2GRAY).astype(np.float32)/255
+    analysis = ruler_analysis(rgb) if analysis is None else analysis
+    gray=analysis["gray"]
     length=float(np.linalg.norm(p1-p0))
     direction=(p1-p0)/length
     normal=np.array([-direction[1],direction[0]])
@@ -145,12 +152,12 @@ def analyse_axis(rgb,p0,p1):
     side_signals=[gaussian_filter1d(p,1)-gaussian_filter1d(p,3/step) for p in sides]
     amplitudes=[float(np.std(p)) for p in side_signals]
     if min(amplitudes)<.001 or min(amplitudes)/max(amplitudes)<.18:
-        return analyse_axis_discrete(rgb,p0,p1)
+        return analyse_axis_discrete(rgb,p0,p1,analysis)
     peak_signal=gaussian_filter1d(profile,1)-gaussian_filter1d(profile,15/step)
     positions_idx,_=find_peaks(peak_signal,prominence=max(.002,float(np.std(signal))*.25),distance=2.5/step)
     positions=t[positions_idx]
     if len(positions)<12:
-        return analyse_axis_discrete(rgb,p0,p1)
+        return analyse_axis_discrete(rgb,p0,p1,analysis)
     frequency=np.fft.rfftfreq(len(signal),step)
     power=abs(np.fft.rfft(signal*np.hanning(len(signal))))**2
     valid=(frequency>1/25)&(frequency<1/2.5)
@@ -171,15 +178,16 @@ def analyse_axis(rgb,p0,p1):
                 "fundamental_fraction":regular,"profile":profile.tolist(),
                 "spacing_method":"spectrum_with_individual_tick_support",
                 "spectral_strength":strength,"tick_coverage":coverage}
-    return analyse_axis_discrete(rgb,p0,p1)
+    return analyse_axis_discrete(rgb,p0,p1,analysis)
 
 
 def auto_scale(rgb, tick_um=3., ruler_length_um=600.):
     positive(tick_um, "tick_um")
     positive(ruler_length_um, "ruler_length_um")
     valid = []
+    analysis=ruler_analysis(rgb)
     for p0, p1 in ruler_axes(rgb):
-        axis = analyse_axis(rgb, p0, p1)
+        axis = analyse_axis(rgb, p0, p1,analysis)
         if axis:
             valid.append(axis)
     # Candidate axis detection alone is not evidence of a ruler.

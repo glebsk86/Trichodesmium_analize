@@ -10,13 +10,18 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from . import __version__
 from . import cli, tube_compare
+from .pipeline import run_batch
+from .calibration import point_scale,auto_scale
+from .imaging import read_image
 from .reporting import write_json
 
 COLUMNS = ['Фото','ID кандидата','Статус проверки','Длина поддержанных участков, мкм',
            'Средняя ширина маски, мкм','Длина поддержанных участков, рабочие px',
            'Средняя ширина маски, рабочие px','Сечений ширины','Масштаб исходника, мкм/px',
            'Масштаб рабочего растра X, мкм/px','Масштаб рабочего растра Y, мкм/px',
-           'Вид','Полная длина цепи, мкм','Число клеток']
+           'Вид','Полная длина цепи, мкм','Число клеток',
+           'Длина прослеженной оси, мкм','Длина прослеженной оси, рабочие px',
+           'Невидимая часть оси, мкм','Невидимая часть оси, рабочие px','Тип длины']
 
 
 def tables(output, manifest):
@@ -32,7 +37,8 @@ def tables(output, manifest):
                              tube_compare.STATUS.get(method['status'],method['status']),
                              g['length_um'],g['width_um'],g['visible_axis_length_px'],g['mean_fitted_width_px'],
                              len(g['width_samples_px']),scale['source_calibration']['um_per_px'],
-                             *factors,'не определён',None,None])
+                             *factors,'не определён',None,None,g['traced_length_um'],g['traced_axis_length_px'],
+                             g['unobserved_length_um'],g['unobserved_axis_length_px'],g['length_kind']])
     with (output/'B-measurements.csv').open('w',encoding='utf-8-sig',newline='') as stream:
         writer = csv.writer(stream,delimiter=';');writer.writerow(COLUMNS);writer.writerows(rows)
     wb = Workbook();ws = wb.active;ws.title='Кандидаты B';ws.append(COLUMNS)
@@ -42,7 +48,8 @@ def tables(output, manifest):
     for column in ws.columns:ws.column_dimensions[column[0].column_letter].width = min(48,max(16,len(column[0].value or '')+2))
     notes = wb.create_sheet('Определения')
     for line in ["Объекты — непроверенные кандидаты; ID оси не равен доказанному трихому.",
-                 "L — сумма поддержанных отрезков оси; пропуски/шкала/общие узлы исключены.",
+                 "L оси — вся прослеженная линия до концов; разрывы включены как оценка и показаны штрихом.",
+                 "L видимого — участки с поддержкой маски; шкала и общие узлы исключены.",
                  "W — средняя ширина подобранной маски по нарисованным сечениям.",
                  "Вид, полная скрытая длина и число клеток не определяются.",
                  "Строки общих маршрутов в узле нельзя суммировать для биомассы."]:
@@ -82,16 +89,21 @@ def run(args):
     seed_args += ['--mask-format',args.mask_format]
     # Validate before creating anything; output inside input must never recurse.
     seed_options = cli.parser().parse_args(seed_args);cli.validate(seed_options)
-    print('Этап 1/2: выделение кандидатов и шкалы',flush=True)
-    seed_code = cli.main(seed_args)
-    if not (output/'seed-report/manifest.json').exists():return 2
-    print('Этап 2/2: уточнение B, измерения и PNG',flush=True)
-    compare_args = argparse.Namespace(seed_report=[output/'seed-report'],source_dir=[source],
-                                     output=output/'report',working_width=args.working_width,
-                                     min_width=4.,max_width=30.,patch_side=2,
-                                     smoothness_weight=3.,scale_tolerance=.10)
-    compare_code = tube_compare.run(compare_args)
-    manifest = json.loads((output/'report/manifest.json').read_text(encoding='utf-8'))
+    args.input=source;args.output=output
+    reference_calibration=None;reference_size=None
+    if args.scale_mode=='reference':
+        ref=read_image(args.reference);reference_size=[ref.shape[1],ref.shape[0]]
+        if args.reference_points:
+            import numpy as np
+            points=np.asarray(args.reference_points).reshape(2,2)
+            if np.any(points<0) or np.any(points[:,0]>=ref.shape[1]) or np.any(points[:,1]>=ref.shape[0]):
+                raise ValueError('Точки референса вне изображения.')
+            reference_calibration=point_scale(args.reference_points,args.reference_distance_um).to_dict()
+        else:reference_calibration=auto_scale(ref).to_dict()
+        if reference_calibration['um_per_px'] is None:raise ValueError('Масштаб референса не определён; задайте точки.')
+    print('Алгоритм B · нормализация фото, объединение фрагментов и измерения',flush=True)
+    manifest=run_batch(args,reference_calibration,reference_size)
+    compare_code=1 if manifest['errors'] else 0
     count = tables(output,manifest)
     index = output/'report/index.html'
     text = index.read_text(encoding='utf-8').replace('<h1>Находки B: фото по порядку</h1>',
@@ -100,8 +112,8 @@ def run(args):
     index.write_text(text,encoding='utf-8')
     (output/'index.html').write_text('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=report/index.html">'
                                    '<a href="report/index.html">Открыть отчёт B</a>',encoding='utf-8')
-    info = dict(version=__version__,input=str(source),output=str(output),seed_exit_code=seed_code,
-                report_exit_code=compare_code,rows=count,summary=manifest['summary'],errors=manifest['errors'])
+    info = dict(version=__version__,input=str(source),output=str(output),algorithm="B",
+                report_exit_code=compare_code,total_seconds=manifest["total_seconds"],rows=count,summary=manifest['summary'],errors=manifest['errors'])
     write_json(output/'run-info.json',info)
     print(f'Готово: {len(manifest["images"])} уникальных фото, {count} кандидатных осей.\n'
           f'Откройте: {output/"index.html"}\nPNG: {output/"report/png-report"}\n'
