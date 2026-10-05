@@ -37,5 +37,11 @@ def test_report_preserves_sources_weights_and_rejects_overwrite(tmp_path):
     assert len(details['variants'])==7
     assert sum(v['relative_fit_weight'] for v in details['variants'])==pytest.approx(1)
     assert (directory/'comparison.jpg').is_file()
+    assert (directory/'ensemble-measurements.jpg').is_file()
+    assert (directory/'proposal-01/ensemble/spine-01/measurement_overlay.jpg').is_file()
+    guides=details['measurement_guides']
+    assert guides['visible_axis_length_px'] is not None
+    assert len(guides['width_lines_xy'])==len(guides['width_samples_px'])
+    assert guides['mean_fitted_width_px']==pytest.approx(np.mean(guides['width_samples_px']))
     assert (output/'index.html').is_file()
     with pytest.raises(ValueError,match='already exists'):run(args)

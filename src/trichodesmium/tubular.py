@@ -33,12 +33,15 @@ class TubeSettings:
     max_width_relative_mad: float = .30
     max_curvature_width: float = 1.0
     crossing_angle_deg: float = 25.0
+    smoothness_weight: float = 3.0
 
     def validate(self):
         if not 0 < self.min_width_px < self.max_width_px:
             raise ValueError("Require 0 < min-width < max-width")
         if not 1 < self.patch_side_px < self.min_width_px:
             raise ValueError("Square patch must span multiple pixels and be smaller than min-width")
+        if not np.isfinite(self.smoothness_weight) or self.smoothness_weight < 0:
+            raise ValueError("Smoothness weight must be finite and nonnegative")
         return self
 
 
@@ -96,6 +99,35 @@ def curvature_width(xy, width):
     cosine = np.sum(a*b,axis=1)/np.maximum(la*lb,1e-6)
     curvature = np.arccos(np.clip(cosine,-1,1))/np.maximum((la+lb)/2,1)
     return float(np.percentile(curvature,95)*width)
+
+
+def boundary_regularity(xy, left, right, reference_width_px=None):
+    """Reward straight sides and wide smooth bends at a width-relative scale.
+
+    Bending cost measures width/radius squared; waviness cost measures how
+    rapidly signed curvature changes. Round tip caps are intentionally absent.
+    These are shape priors, never evidence of biological identity.
+    """
+    width = max(1., float(np.median(left+right)) if reference_width_px is None else float(reference_width_px))
+    normal = normals(xy)
+    bending, waviness = [], []
+    for edge in (xy-left[:,None]*normal, xy+right[:,None]*normal):
+        p = resample_spine(edge, max(2., width/4))
+        if len(p) < 7:
+            continue
+        a, b = p[2:-2]-p[:-4], p[4:]-p[2:-2]
+        la, lb = np.linalg.norm(a,axis=1), np.linalg.norm(b,axis=1)
+        angle = np.arctan2(a[:,0]*b[:,1]-a[:,1]*b[:,0],np.sum(a*b,axis=1))
+        curvature = angle/np.maximum((la+lb)/2,1e-6)
+        bending.append(float(np.mean(np.minimum(abs(curvature)*width,3.)**2)))
+        ds = np.maximum(np.linalg.norm(np.diff(p[2:-2],axis=0),axis=1),1e-6)
+        change = np.diff(curvature)/ds*width**2
+        waviness.append(float(np.mean(np.minimum(abs(change),3.)**2)))
+    bend_cost = float(np.mean(bending)) if bending else 0.
+    wave_cost = float(np.mean(waviness)) if waviness else 0.
+    regularity = float(np.exp(-bend_cost-.30*wave_cost))
+    return {"boundary_regularity":regularity,"boundary_bending_cost":bend_cost,
+            "boundary_waviness_cost":wave_cost,"regularity_reference_width_px":width}
 
 
 def skeleton_graph(mask, spur_limit):
@@ -325,7 +357,12 @@ def fit_hypothesis(evidence,source,xy,initial_radius,obstruction,kind,shift=0.,f
     gradient = float(np.mean(np.clip(np.minimum(scores[0],scores[1]),-5,20)[outside])) if outside.any() else -5.
     geometric_length = float(np.linalg.norm(np.diff(shifted,axis=0),axis=1).sum())
     # Objective weights are relative fit scores, never identity probabilities.
-    objective = gradient+2*fraction-width_mad*3-abs(shift)/max(initial_radius,1)*.3
+    base_objective = gradient+2*fraction-width_mad*3-abs(shift)/max(initial_radius,1)*.3
+    # All seven variants share one reference width: merely shrinking the mask
+    # must not win extra points through its normalization denominator.
+    shape = boundary_regularity(shifted,*chosen,reference_width_px=2*initial_radius)
+    smoothness_bonus = s.smoothness_weight*shape["boundary_regularity"] if kind=="ensemble" else 0.
+    objective = base_objective+smoothness_bonus
     reasons=[]
     if fraction<s.min_supported_fraction:reasons.append("insufficient_bilateral_boundary_support")
     if width_mad>s.max_width_relative_mad:reasons.append("observed_width_inconsistent")
@@ -338,6 +375,7 @@ def fit_hypothesis(evidence,source,xy,initial_radius,obstruction,kind,shift=0.,f
             "median_proposed_width_px":median,"raw_width_relative_mad":width_mad,
             "template_axis_length_px":geometric_length,"reasons":reasons,
             "curvature_width_95":bend,
+            "base_objective":base_objective,"smoothness_bonus":smoothness_bonus,**shape,
             "shift_px":shift,"radius_factor":factor}
 
 

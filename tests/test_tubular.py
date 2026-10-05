@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import pytest
 
-from trichodesmium.tubular import TubeSettings, compare_proposal, BoundaryEvidence, fit_spine, pair_overlap
+from trichodesmium.tubular import TubeSettings, compare_proposal, BoundaryEvidence, fit_spine, pair_overlap, boundary_regularity
 
 
 def painted(mask):
@@ -123,3 +123,33 @@ def test_touching_tips_are_not_promoted_to_resolved_crossing():
     assert overlap.any()
     assert angle>25
     assert kind=='endpoint_junction'
+
+
+def test_straight_and_large_radius_edges_outrank_wavy_or_tight_edges():
+    x=np.arange(0,300,2.);xy=np.c_[x,np.zeros(len(x))];r=np.full(len(x),5.)
+    straight=boundary_regularity(xy,r,r)['boundary_regularity']
+    wavy=boundary_regularity(xy,r+1.5*np.sin(x/5),r+1.5*np.sin(x/5))['boundary_regularity']
+    t=np.linspace(0,np.pi/2,len(x))
+    large=boundary_regularity(np.c_[100*np.cos(t),100*np.sin(t)],r,r)['boundary_regularity']
+    tight=boundary_regularity(np.c_[20*np.cos(t),20*np.sin(t)],r,r)['boundary_regularity']
+    assert straight>.999
+    assert large>.95
+    assert wavy<.8 and tight<large-.15
+
+
+def test_boundary_regularity_uses_relative_width_not_absolute_pixel_radius():
+    t=np.linspace(0,np.pi/2,150);xy=np.c_[100*np.cos(t),100*np.sin(t)];r=np.full(150,5.)
+    one=boundary_regularity(xy,r,r)['boundary_regularity']
+    two=boundary_regularity(xy*2,r*2,r*2)['boundary_regularity']
+    assert two==pytest.approx(one,abs=.005)
+
+
+def test_smoothness_can_be_disabled_without_changing_point_baseline():
+    mask=np.zeros((150,340),np.uint8);cv2.line(mask,(30,75),(300,75),1,10)
+    zero=compare_proposal(painted(mask>0),mask>0,np.ones(mask.shape,bool),np.zeros(mask.shape,bool),TubeSettings(smoothness_weight=0))
+    revised=compare_proposal(painted(mask>0),mask>0,np.ones(mask.shape,bool),np.zeros(mask.shape,bool))
+    np.testing.assert_array_equal(zero['methods']['single']['fits'][0]['template'],revised['methods']['single']['fits'][0]['template'])
+    assert zero['methods']['single']['fits'][0]['objective']==revised['methods']['single']['fits'][0]['objective']
+    assert zero['methods']['ensemble']['fits'][0]['smoothness_bonus']==0
+    assert revised['methods']['ensemble']['fits'][0]['smoothness_bonus']>2.9
+    with pytest.raises(ValueError):TubeSettings(smoothness_weight=-1).validate()

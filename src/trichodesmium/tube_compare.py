@@ -16,6 +16,7 @@ from .cli import provenance
 from .imaging import field_mask, read_image
 from .reporting import write_json
 from .tubular import TubeSettings, compare_proposal, pair_overlap
+from .tube_guides import measurement_guides, draw_guides, guide_label, with_header
 
 
 KINDS = ("single", "ensemble")
@@ -55,11 +56,24 @@ def metadata(fit):
             for key, value in fit.items() if key not in excluded}
 
 
-def export_fit(directory, fit):
+def export_fit(directory, fit, rgb, ident):
     directory.mkdir()
     mask_png(directory/"template.png", fit["template"])
     mask_png(directory/"supported.png", fit["supported"])
     details = metadata(fit)
+    guides = measurement_guides(fit)
+    details["measurement_guides"] = guides
+    canvas = rgb.copy()
+    contour(canvas,fit["template"],(225,35,15) if not fit["reasons"] else (150,150,150))
+    draw_guides(canvas,fit,guides)
+    yy,xx = np.nonzero(fit["template"])
+    x0,y0,x1,y1 = max(0,int(xx.min())-30),max(0,int(yy.min())-30),min(rgb.shape[1],int(xx.max())+31),min(rgb.shape[0],int(yy.max())+31)
+    if x1-x0<300:
+        centre=(x0+x1)//2;x0=max(0,centre-150);x1=min(rgb.shape[1],x0+300)
+    image,header = with_header(canvas[y0:y1,x0:x1],[guide_label(ident,guides)])
+    image.save(directory/"measurement_overlay.jpg",quality=95,subsampling=0)
+    details["measurement_overlay"] = {"file":"measurement_overlay.jpg",
+                                       "crop_bbox_working_xyxy":[x0,y0,x1,y1],"header_px":header}
     details["mask_coordinates"] = "working EXIF-oriented pixels; see image transform"
     details["length_um"] = details["width_um"] = None
     details["measurement_notice"] = "Proposed width and template axis length are model diagnostics, not biological measurements."
@@ -71,6 +85,7 @@ def export_fit(directory, fit):
         record["template_file"] = name
         details["variants"].append(record)
     write_json(directory/"details.json", details)
+    return guides
 
 
 def contour(canvas, mask, color, thickness=1):
@@ -138,7 +153,8 @@ def run(args):
     if args.source_dir and len(args.source_dir) != len(args.seed_report):
         raise ValueError("Supply one source-dir per seed-report, in the same order")
     settings = TubeSettings(min_width_px=args.min_width, max_width_px=args.max_width,
-                            patch_side_px=args.patch_side).validate()
+                            patch_side_px=args.patch_side,
+                            smoothness_weight=getattr(args,"smoothness_weight",3.)).validate()
     output.mkdir(parents=True)
     simple_args = argparse.Namespace(**{k: [str(p) for p in v] if isinstance(v, list) else v
                                         for k, v in vars(args).items()})
@@ -155,7 +171,10 @@ def run(args):
                   "Красный контур — прошедшая фильтр гипотеза; серый — отклонённая; пурпурный — неоднозначное перекрытие. "
                   "Зелёным показаны только участки с двусторонней поддержкой границы. Это не экспертная разметка.</p>",
                   "<p>Маска-шаблон может проходить через разрыв. Supported-маска исключает шкалу и общие узлы. "
-                  "Физические длины/ширины не рассчитаны. Число осей не равно числу трихомов; пропуски исходного детектора этим опытом не исправляются.</p>"]
+                  "Голубые линии — поддержанные участки оси длины, жёлтые — сечения ширины. Подписи над фото используют рабочие пиксели. "
+                  "L участка — сумма поддержанных отрезков, W маски — среднее нарисованных сечений подобранной маски, не проверенная внешняя ширина клеток. "
+                  "Серая штриховая ось обозначает только гипотезу в пробелах. Физические размеры не рассчитаны. "
+                  "Число осей не равно числу трихомов; пропуски исходного детектора этим опытом не исправляются.</p>"]
     for report_index, report in enumerate(args.seed_report):
         report = report.expanduser().resolve()
         seed_manifest = json.loads((report/"manifest.json").read_text(encoding="utf-8"))
@@ -201,6 +220,8 @@ def run(args):
                 layers = [rgb.copy() for _ in range(4)]
                 contour(layers[1], labels > 0, (225, 35, 15))
                 supported_layers = [rgb.copy(), rgb.copy()]
+                guide_layers = [rgb.copy(),rgb.copy()]
+                guide_labels = [[],[]]
                 row = {"photo": image["photo"], "image_id": image_id, "source_path": str(source),
                        "file_sha256": file_hash, "decoded_rgb_sha256": decoded_hash,
                        "seed_labels_sha256": sha256(folder/"labels.tif"),
@@ -232,7 +253,11 @@ def run(args):
                         md.mkdir()
                         mask_png(md/"ambiguous.png",method["ambiguous_mask"])
                         for j,fit in enumerate(method["fits"],1):
-                            export_fit(md/f"spine-{j:02d}",fit)
+                            guides=export_fit(md/f"spine-{j:02d}",fit,rgb,f"{ident}.{j}")
+                            fit["measurement_guides"]=guides
+                            draw_guides(guide_layers[k],fit,guides)
+                            contour(guide_layers[k],fit["template"],(225,35,15) if not fit["reasons"] else (150,150,150))
+                            guide_labels[k].append(guide_label(f"{ident}.{j}",guides))
                             color = (225,35,15) if not fit["reasons"] else (150,150,150)
                             contour(layers[k+2],fit["template"],color)
                             contour(supported_layers[k],fit["supported"],(20,230,95),2)
@@ -244,7 +269,9 @@ def run(args):
                         item["methods"][kind]["fits"] = [{key:fit[key] for key in
                             ("status","reasons","supported_fraction","median_proposed_width_px",
                              "template_axis_length_px","raw_width_relative_mad","curvature_width_95",
-                             "objective","selected_variant")} for fit in method["fits"]]
+                             "objective","selected_variant","base_objective","smoothness_bonus",
+                             "boundary_regularity","boundary_bending_cost","boundary_waviness_cost",
+                             "measurement_guides")} for fit in method["fits"]]
                         status = STATUS.get(method["status"],method["status"])
                         html_parts.append(f"<details><summary>Объект {ident}, {'A' if k==0 else 'B'}: {status}; "
                                           f"осей {len(method['fits'])}</summary><p>{html.escape(str(method['reasons']))}</p>")
@@ -254,7 +281,9 @@ def run(args):
                                               f"{html.escape(', '.join(fit['reasons']))} · "
                                               f"<a href='{rel}/template.png'>Шаблон</a> · "
                                               f"<a href='{rel}/supported.png'>Поддержанные участки</a> · "
-                                              f"<a href='{rel}/details.json'>Ось, оценки, веса вариантов</a></p>")
+                                              f"<a href='{rel}/details.json'>Ось, оценки, веса вариантов</a></p>"
+                                              f"<a href='{rel}/measurement_overlay.jpg'><img src='{rel}/measurement_overlay.jpg' "
+                                              f"style='max-height:650px' alt='Ось длины и линии ширины {ident}.{j}'></a>")
                         html_parts.append("</details>")
                     write_json(propdir/"details.json",item)
                     row["proposals"].append(item)
@@ -262,9 +291,15 @@ def run(args):
                 for k,kind in enumerate(KINDS):
                     Image.fromarray(layers[k+2]).save(dest/(kind+"-templates.jpg"),quality=95,subsampling=0)
                     Image.fromarray(supported_layers[k]).save(dest/(kind+"-supported.jpg"),quality=95,subsampling=0)
+                    annotated,header=with_header(guide_layers[k],guide_labels[k])
+                    annotated.save(dest/(kind+"-measurements.jpg"),quality=95,subsampling=0)
+                    row.setdefault("measurement_overlay_header_px",{})[kind]=header
                 html_parts.append(f"<p>Участки с поддержкой двух краёв: "
                                   f"<a href='images/{image_id}/single-supported.jpg'>A</a> · "
                                   f"<a href='images/{image_id}/ensemble-supported.jpg'>B</a></p>")
+                html_parts.append(f"<p>Оси длины и линии ширины с подписями: "
+                                  f"<a href='images/{image_id}/single-measurements.jpg'>A</a> · "
+                                  f"<a href='images/{image_id}/ensemble-measurements.jpg'>B</a></p>")
                 html_parts.append("</section>")
                 write_json(dest/"details.json",row)
                 manifest["images"].append(row)
@@ -302,6 +337,8 @@ def main():
     parser.add_argument("--min-width",type=float,default=4.)
     parser.add_argument("--max-width",type=float,default=30.)
     parser.add_argument("--patch-side",type=int,default=2)
+    parser.add_argument("--smoothness-weight",type=float,default=3.,
+                        help="B-only bonus for regular side boundaries; 0 reproduces 0.4 ranking")
     args = parser.parse_args()
     try:
         return run(args)
