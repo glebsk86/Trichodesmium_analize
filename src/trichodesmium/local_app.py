@@ -72,6 +72,7 @@ def parser():
     p.add_argument('--mask-format',choices=['auto','binary','instances'],default='auto')
     p.add_argument('--working-width',type=int,default=960,help='Ширина рабочего B-растра; по умолчанию 960 px')
     p.add_argument('--workers',type=int,default=0,help='Linux: число параллельных фото; 0 — авто, 1 — последовательно')
+    p.add_argument('--limited-output',action='store_true',help='Только сводный HTML со встроенными картинками и CSV/XLSX')
     p.add_argument('--version',action='version',version=__version__)
     return p
 
@@ -107,18 +108,22 @@ def run(args):
     manifest=run_batch(args,reference_calibration,reference_size)
     compare_code=1 if manifest['errors'] else 0
     count = tables(output,manifest)
-    index = output/'report/index.html'
+    limited=getattr(args,'limited_output',False)
+    index = output/'index.html' if limited else output/'report/index.html'
+    prefix='' if limited else '../'
     text = index.read_text(encoding='utf-8').replace('<h1>Находки B: фото по порядку</h1>',
-            '<h1>Находки B: фото по порядку</h1><p><a href="../B-measurements.xlsx">Таблица XLSX</a> · '
-            '<a href="../B-measurements.csv">Таблица CSV</a></p>')
+            f'<h1>Находки B: фото по порядку</h1><p><a href="{prefix}B-measurements.xlsx">Таблица XLSX</a> · '
+            f'<a href="{prefix}B-measurements.csv">Таблица CSV</a></p>')
     index.write_text(text,encoding='utf-8')
-    (output/'index.html').write_text('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=report/index.html">'
-                                   '<a href="report/index.html">Открыть отчёт B</a>',encoding='utf-8')
+    if not limited:
+        (output/'index.html').write_text('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=report/index.html">'
+                                       '<a href="report/index.html">Открыть отчёт B</a>',encoding='utf-8')
     info = dict(version=__version__,input=str(source),output=str(output),algorithm="B",
                 report_exit_code=compare_code,total_seconds=manifest["total_seconds"],rows=count,summary=manifest['summary'],errors=manifest['errors'])
-    write_json(output/'run-info.json',info)
+    if not limited:write_json(output/'run-info.json',info)
+    png='' if limited else f'PNG: {output/"report/png-report"}\n'
     print(f'Готово: {len(manifest["images"])} уникальных фото, {count} кандидатных осей.\n'
-          f'Откройте: {output/"index.html"}\nPNG: {output/"report/png-report"}\n'
+          f'Откройте: {output/"index.html"}\n{png}'
           f'Таблица: {output/"B-measurements.xlsx"}',flush=True)
     if manifest['errors']:print('Есть ошибки отдельных файлов; см. run-info.json.',file=sys.stderr)
     return 1 if compare_code or not manifest['images'] else 0

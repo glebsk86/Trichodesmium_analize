@@ -136,7 +136,10 @@ def process_photo(job):
             segmentation['input_normalization']={'original_size_xy':[original.shape[1],original.shape[0]],'analysis_size_xy':[rgb.shape[1],rgb.shape[0]]}
         timings['segmentation_association']=time.perf_counter()-t
         t=time.perf_counter()
-        row=write_result(output,source,relative,ordinal,original,rgb,decoding,labels,obstruction,calibration,TubeSettings(),segmentation,links)
+        export=write_result
+        if options.get('limited_output'):
+            from .compact_report import write_result as export
+        row=export(output,source,relative,ordinal,original,rgb,decoding,labels,obstruction,calibration,TubeSettings(),segmentation,links)
         timings['B_refinement_export']=time.perf_counter()-t;timings['total']=time.perf_counter()-started;row['timings_seconds']=timings
         return {'image':row}
     except (OSError,ValueError,KeyError) as exc:
@@ -145,7 +148,8 @@ def process_photo(job):
 
 def jobs_for(args,output,reference_calibration=None,reference_size=None):
     options=dict(working_width=args.working_width,scale_mode=args.scale_mode,um_per_pixel=args.um_per_pixel,
-                 mask_dir=args.mask_dir,mask_format=args.mask_format,reference_calibration=reference_calibration,reference_size_xy=reference_size)
+                 mask_dir=args.mask_dir,mask_format=args.mask_format,limited_output=getattr(args,'limited_output',False),
+                 reference_calibration=reference_calibration,reference_size_xy=reference_size)
     paths=sorted(list_images(args.input,args.recursive),key=lambda p:natural_key(p.relative_to(args.input).as_posix()))
     return [(path,path.relative_to(args.input).as_posix(),i,output,options) for i,path in enumerate(paths,1)]
 
@@ -157,7 +161,8 @@ def execute(jobs):
 
 
 def run_batch(args,reference_calibration=None,reference_size=None):
-    output=args.output/'report';jobs=jobs_for(args,output,reference_calibration,reference_size)
+    limited=getattr(args,'limited_output',False)
+    output=args.output if limited else args.output/'report';jobs=jobs_for(args,output,reference_calibration,reference_size)
     if not jobs:raise ValueError('Нет поддерживаемых фотографий.')
     from .linux_parallel import available_workers,execute as execute_parallel
     workers=available_workers(getattr(args,'workers',1),len(jobs))
@@ -175,10 +180,10 @@ def run_batch(args,reference_calibration=None,reference_size=None):
         seen[digest]=row['photo'];manifest['images'].append(row)
         print(f"  готово: {row['timings_seconds']['total']:.1f} с",flush=True)
     manifest['images'].sort(key=lambda im:natural_key(im['photo']))
-    return finish(output,manifest,started)
+    return finish(output,manifest,started,limited)
 
 
-def finish(output,manifest,started):
+def finish(output,manifest,started,limited=False):
     manifest['scale_consistency']=check_scale_consistency([r['calibration'] for r in manifest['images']])
     methods=[p['methods']['ensemble'] for row in manifest['images'] for p in row['proposals']]
     fits=[f for method in methods for f in method['fits']]
@@ -187,6 +192,11 @@ def finish(output,manifest,started):
         methods={'ensemble':dict(proposal_statuses=dict(Counter(m['status'] for m in methods)),axis_hypotheses=len(fits),
             axes_passing_filter=sum(not f['reasons'] for f in fits),axes_rejected=sum(bool(f['reasons']) for f in fits))},
         notice='Counts are unverified candidates, not biological recall/precision.')
+    if limited:
+        from .compact_report import build_report as build_compact
+        build_compact(output,manifest)
+        manifest['total_seconds']=time.perf_counter()-started
+        return manifest
     build_report(output,manifest)
     manifest['total_seconds']=time.perf_counter()-started
     write_json(output/'manifest.json',manifest);write_json(output/'summary.json',manifest['summary'])
