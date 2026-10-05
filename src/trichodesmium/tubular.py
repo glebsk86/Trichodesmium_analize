@@ -319,7 +319,7 @@ def choose_edges(evidence,xy,radius,kind):
     return chosen,raw,scores
 
 
-def render_tube(shape,xy,left,right,valid=None):
+def render_tube(shape,xy,left,right,valid=None,tip_support=None):
     n = normals(xy)
     mask = np.zeros(shape,np.uint8)
     for i in range(len(xy)-1):
@@ -331,6 +331,21 @@ def render_tube(shape,xy,left,right,valid=None):
     for i in (0,len(xy)-1):
         if valid is None or valid[i]:
             cv2.circle(mask,tuple(np.rint(xy[i]).astype(int)),max(1,int(round((left[i]+right[i])/2))),1,-1)
+    if tip_support is not None:
+        # A skeleton tip is not necessarily the centre of a hemispherical cell
+        # end. Constrain only its outward cap to observed proposal pixels (one
+        # pixel tolerance), keeping rounded ends where evidence actually exists.
+        allowed = cv2.dilate(tip_support.astype(np.uint8),np.ones((3,3),np.uint8))>0
+        yy,xx = np.nonzero(mask)
+        points = np.c_[xx,yy]
+        for i,j in ((0,1),(-1,-2)):
+            outward = xy[i]-xy[j]
+            outward /= max(np.linalg.norm(outward),1e-9)
+            delta = points-xy[i]
+            radius = max(left[i],right[i])+2
+            cap = (delta@outward>=0)&(np.linalg.norm(delta,axis=1)<=radius)
+            remove = cap&~allowed[yy,xx]
+            mask[yy[remove],xx[remove]]=0
     return mask>0
 
 
@@ -342,7 +357,7 @@ def fit_hypothesis(evidence,source,xy,initial_radius,obstruction,kind,shift=0.,f
     widths = raw[0]+raw[1]
     median = float(np.median(widths))
     width_mad = float(np.median(abs(widths-median))/max(median,1))
-    template = render_tube(source.shape,shifted,*chosen)
+    template = render_tube(source.shape,shifted,*chosen,tip_support=source)
     threshold = s.min_pigment_difference if kind=="single" else s.min_lab_gradient
     border_supported = np.minimum(scores[0],scores[1])>=threshold
     blocked = sample(obstruction,shifted,0)>.5
@@ -350,7 +365,7 @@ def fit_hypothesis(evidence,source,xy,initial_radius,obstruction,kind,shift=0.,f
     near_source = sample(distance_transform_edt(~source),shifted)<=max(3.,radius)
     # Reject a contrast fit which slid away from the common proposal.
     observed &= near_source
-    supported = render_tube(source.shape,shifted,*chosen,valid=observed)&~obstruction&evidence.field
+    supported = render_tube(source.shape,shifted,*chosen,valid=observed,tip_support=source)&~obstruction&evidence.field
     supported &= cv2.dilate(source.astype(np.uint8),cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(9,9)))>0
     outside = ~blocked
     fraction = float(np.mean(observed[outside])) if outside.any() else 0.
@@ -376,7 +391,8 @@ def fit_hypothesis(evidence,source,xy,initial_radius,obstruction,kind,shift=0.,f
             "template_axis_length_px":geometric_length,"reasons":reasons,
             "curvature_width_95":bend,
             "base_objective":base_objective,"smoothness_bonus":smoothness_bonus,**shape,
-            "shift_px":shift,"radius_factor":factor}
+            "shift_px":shift,"radius_factor":factor,
+            "tip_policy":"outward_caps_limited_to_source_mask_with_1px_tolerance"}
 
 
 def fit_spine(evidence,source,xy,obstruction,kind):

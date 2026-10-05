@@ -153,3 +153,28 @@ def test_smoothness_can_be_disabled_without_changing_point_baseline():
     assert zero['methods']['ensemble']['fits'][0]['smoothness_bonus']==0
     assert revised['methods']['ensemble']['fits'][0]['smoothness_bonus']>2.9
     with pytest.raises(ValueError):TubeSettings(smoothness_weight=-1).validate()
+
+
+def test_caps_do_not_extend_past_a_flat_observed_end_but_keep_round_cells():
+    from trichodesmium.tubular import render_tube
+    xy=np.c_[np.arange(30.,301.,2),np.full(136,75.)]
+    radii=np.full(len(xy),5.)
+    flat=np.zeros((150,340),bool);flat[70:81,30:301]=True
+    unconstrained=render_tube(flat.shape,xy,radii,radii)
+    fixed=render_tube(flat.shape,xy,radii,radii,tip_support=flat)
+    assert np.nonzero(unconstrained)[1].min()==25
+    assert np.nonzero(fixed)[1].min()==29  # one pixel tolerance, not a full cap
+    assert np.nonzero(fixed)[1].max()==301
+    assert fixed[75,30:301].all()
+    round_cells=np.zeros(flat.shape,np.uint8);cv2.line(round_cells,(30,75),(300,75),1,10)
+    rounded=render_tube(flat.shape,xy,radii,radii,tip_support=round_cells>0)
+    assert np.array_equal(rounded,unconstrained)
+
+
+def test_unsupported_tip_does_not_acquire_a_circular_cap():
+    from trichodesmium.tubular import render_tube
+    xy=np.c_[np.arange(30.,301.,2),np.full(136,75.)]
+    radii=np.full(len(xy),5.);valid=np.ones(len(xy),bool);valid[-4:]=False
+    source=np.ones((150,340),bool)
+    result=render_tube(source.shape,xy,radii,radii,valid=valid,tip_support=source)
+    assert np.nonzero(result)[1].max()==292

@@ -44,4 +44,36 @@ def test_report_preserves_sources_weights_and_rejects_overwrite(tmp_path):
     assert len(guides['width_lines_xy'])==len(guides['width_samples_px'])
     assert guides['mean_fitted_width_px']==pytest.approx(np.mean(guides['width_samples_px']))
     assert (output/'index.html').is_file()
+    html=(output/'index.html').read_text()
+    assert html.index('Исходное фото</h3>')<html.index('/annotation.png')<html.index('/measurement.png')
+    for name in ('annotation.png','measurement.png'):
+        with Image.open(directory/'proposal-01/ensemble/spine-01'/name) as im:
+            assert im.format=='PNG'
+            assert np.unique(np.asarray(im).reshape(-1,3),axis=0).shape[0]>10
+    assert (output/report['images'][0]['png_report']).is_file()
     with pytest.raises(ValueError,match='already exists'):run(args)
+
+
+def test_empty_frames_keep_natural_photo_order_and_explicit_png_notice(tmp_path):
+    photos=tmp_path/'photos';photos.mkdir();seeds=tmp_path/'seeds';seeds.mkdir()
+    images=[]
+    for number in (12,2,1):
+        photo=photos/f'photo_{number}.png'
+        Image.fromarray(np.full((100,160,3),190+number,np.uint8)).save(photo)
+        directory=seeds/'images'/str(number);directory.mkdir(parents=True)
+        Image.fromarray(np.zeros((100,160),np.int32)).save(directory/'labels.tif')
+        Image.fromarray(np.zeros((100,160),np.uint8)).save(directory/'ruler_mask.png')
+        images.append({'photo':photo.name,'image_id':str(number),'sha256':hashlib.sha256(photo.read_bytes()).hexdigest()})
+    (seeds/'manifest.json').write_text(json.dumps({'parameters':{'input':str(photos)},'images':images}))
+    output=tmp_path/'report'
+    args=argparse.Namespace(seed_report=[seeds],source_dir=None,output=output,working_width=160,min_width=4.,max_width=30.,patch_side=2)
+    assert run(args)==0
+    manifest=json.loads((output/'manifest.json').read_text())
+    assert [r['photo'] for r in manifest['images']]==['photo_1.png','photo_2.png','photo_12.png']
+    html=(output/'index.html').read_text()
+    assert html.count('Ничего не найдено')==3
+    assert html.index('photo_1.png')<html.index('photo_2.png')<html.index('photo_12.png')
+    for row in manifest['images']:
+        with Image.open(output/row['png_report']) as im:
+            assert im.format=='PNG' and im.mode=='RGB'
+        assert (output/'images'/row['image_id']/'working-original.png').exists()

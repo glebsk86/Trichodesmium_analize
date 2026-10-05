@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw, ImageFont
 from .tubular import normals, sample
 
 
-def measurement_guides(fit, width_samples=12):
+def measurement_guides(fit, width_samples=12, calibration=None):
     """Never bridge unsupported pixels or issue measurements for rejected fits.
 
     W is the fitted mask's width, not an independently measured cell envelope.
@@ -19,6 +19,7 @@ def measurement_guides(fit, width_samples=12):
               "full_chain_length_px":None, "length_um":None, "width_um":None,
               "length_segments_xy":[], "length_segments_px":[],
               "width_lines_xy":[], "width_samples_px":[],
+              "length_segments_um":[], "width_samples_um":[], "calibration":calibration,
               "notice":"L sums supported axis intervals; W is fitted-mask width. Not verified biological dimensions."}
     if fit["reasons"] or len(xy)<2:
         return result
@@ -51,6 +52,19 @@ def measurement_guides(fit, width_samples=12):
         result["width_lines_xy"] = lines.tolist()
         result["width_samples_px"] = widths.tolist()
         result["mean_fitted_width_px"] = float(widths.mean())
+    factors = (calibration or {}).get("working_um_per_px_xy")
+    if factors is not None:
+        factors = np.asarray(factors,dtype=float)
+        if factors.shape!=(2,) or not np.isfinite(factors).all() or np.any(factors<=0):
+            raise ValueError("Physical scale must contain two positive finite factors")
+        for field,values,output in (("length_segments_xy","length_segments_um","length_um"),
+                                    ("width_lines_xy","width_samples_um","width_um")):
+            lines = np.asarray(result[field])
+            if len(lines):
+                distances = np.linalg.norm((lines[:,1]-lines[:,0])*factors,axis=1)
+                result[values] = distances.tolist()
+                result[output] = float(distances.sum() if field=="length_segments_xy" else distances.mean())
+        result["units"] = "working_px_and_um"
     return result
 
 
@@ -71,10 +85,15 @@ def guide_label(ident,guides):
     length,width = guides["visible_axis_length_px"],guides["mean_fitted_width_px"]
     ls = "—" if length is None else f"{length:.1f}"
     ws = "—" if width is None else f"{width:.1f}"
-    return f"{ident}: L участка = {ls} px; W маски = {ws} px; сечений {len(guides['width_samples_px'])}"
+    lu,wu = guides["length_um"],guides["width_um"]
+    ls = f"{lu:.1f} мкм ({ls} px)" if lu is not None else f"{ls} px"
+    ws = f"{wu:.1f} мкм ({ws} px)" if wu is not None else f"{ws} px"
+    calibrated = (guides.get("calibration") or {}).get("working_um_per_px_xy") is not None
+    notice = "" if lu is not None or wu is not None else "; измерение не выдано" if calibrated else "; масштаб не определён"
+    return f"{ident}: L участка = {ls}; W маски = {ws}; сечений {len(guides['width_samples_px'])}{notice}"
 
 
-def with_header(rgb,labels):
+def with_header(rgb,labels,legend="Голубая ось: L участка; жёлтые сечения: W маски"):
     font = None
     for filename in ("DejaVuSans.ttf","/System/Library/Fonts/Supplemental/Arial.ttf"):
         try:
@@ -84,7 +103,7 @@ def with_header(rgb,labels):
             pass
     if font is None:font = ImageFont.load_default()
     lines = []
-    for text in ["Рабочие px · голубая ось: L; жёлтые сечения: W маски",*labels]:
+    for text in [legend,*labels]:
         current = ""
         for word in text.split():
             trial = current+" "+word if current else word

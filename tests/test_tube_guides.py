@@ -52,3 +52,22 @@ def test_narrow_object_caption_is_wrapped_above_the_photo():
     image,header=with_header(np.full((100,300,3),190,np.uint8),[label])
     assert image.size==(300,100+header)
     assert header>60
+
+
+def test_physical_dimensions_follow_exact_drawn_vectors_and_raster_scale():
+    scale={'working_um_per_px_xy':[.5/.625,.5/.625]}
+    guides=measurement_guides(straight_fit(),calibration=scale)
+    assert guides['length_um']==pytest.approx(216.)
+    assert guides['width_um']==pytest.approx(8.)
+    assert sum(guides['length_segments_um'])==pytest.approx(guides['length_um'])
+    assert np.mean(guides['width_samples_um'])==pytest.approx(guides['width_um'])
+    assert 'мкм' in guide_label('1.1',guides)
+    # X and Y factors remain distinct after an anisotropic image resize.
+    guides=measurement_guides(straight_fit(),calibration={'working_um_per_px_xy':[.8,.6]})
+    assert guides['length_um']==pytest.approx(216.)
+    assert guides['width_um']==pytest.approx(6.)
+
+
+def test_invalid_physical_scale_is_rejected():
+    with pytest.raises(ValueError,match='positive finite'):
+        measurement_guides(straight_fit(),calibration={'working_um_per_px_xy':[0,.8]})

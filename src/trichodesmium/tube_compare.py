@@ -13,9 +13,12 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from .cli import provenance
+from .calibration import Calibration, ruler_mask
 from .imaging import field_mask, read_image
 from .reporting import write_json
 from .tubular import TubeSettings, compare_proposal, pair_overlap
+from .tube_scale import image_scale, check_scale_consistency
+from .tube_report import natural_key, build_report
 from .tube_guides import measurement_guides, draw_guides, guide_label, with_header
 
 
@@ -56,26 +59,30 @@ def metadata(fit):
             for key, value in fit.items() if key not in excluded}
 
 
-def export_fit(directory, fit, rgb, ident):
+def export_fit(directory, fit, rgb, ident, calibration=None):
     directory.mkdir()
     mask_png(directory/"template.png", fit["template"])
     mask_png(directory/"supported.png", fit["supported"])
     details = metadata(fit)
-    guides = measurement_guides(fit)
+    guides = measurement_guides(fit,calibration=calibration)
     details["measurement_guides"] = guides
     canvas = rgb.copy()
     contour(canvas,fit["template"],(225,35,15) if not fit["reasons"] else (150,150,150))
+    annotation = canvas.copy()
     draw_guides(canvas,fit,guides)
     yy,xx = np.nonzero(fit["template"])
     x0,y0,x1,y1 = max(0,int(xx.min())-30),max(0,int(yy.min())-30),min(rgb.shape[1],int(xx.max())+31),min(rgb.shape[0],int(yy.max())+31)
     if x1-x0<300:
         centre=(x0+x1)//2;x0=max(0,centre-150);x1=min(rgb.shape[1],x0+300)
     image,header = with_header(canvas[y0:y1,x0:x1],[guide_label(ident,guides)])
+    annotation_image,_ = with_header(annotation[y0:y1,x0:x1],[f"Объект {ident}: контур гипотезы"],legend="Красный — кандидат; серый — отклонённая гипотеза")
+    annotation_image.save(directory/"annotation.png")
+    image.save(directory/"measurement.png")
     image.save(directory/"measurement_overlay.jpg",quality=95,subsampling=0)
     details["measurement_overlay"] = {"file":"measurement_overlay.jpg",
                                        "crop_bbox_working_xyxy":[x0,y0,x1,y1],"header_px":header}
     details["mask_coordinates"] = "working EXIF-oriented pixels; see image transform"
-    details["length_um"] = details["width_um"] = None
+    details["length_um"],details["width_um"] = guides["length_um"],guides["width_um"]
     details["measurement_notice"] = "Proposed width and template axis length are model diagnostics, not biological measurements."
     details["variants"] = []
     for i, variant in enumerate(fit["variants"], 1):
@@ -160,9 +167,26 @@ def run(args):
                                         for k, v in vars(args).items()})
     manifest = provenance(simple_args)
     manifest.update(experiment="tube-comparison", settings=asdict(settings),
-                    working_coordinates="EXIF-oriented; working-width normalization; no physical calibration",
+                    working_coordinates="EXIF-oriented; working-width normalization; physical scale recorded per image",
                     weight_notice="Softmax fit weights, not probabilities of Trichodesmium identity",
                     seed_reports=[], images=[], duplicates=[], errors=[])
+    # Calibrate and cross-check the entire series before issuing any µm labels.
+    scale_cache = {};scale_seen = set()
+    for ri,report in enumerate(args.seed_report):
+        seed = json.loads((report/"manifest.json").read_text(encoding="utf-8"))
+        source_dir = args.source_dir[ri] if args.source_dir else Path(seed["parameters"]["input"])
+        for image in seed["images"]:
+            try:
+                source_rgb = read_image(source_dir/image["photo"])
+                digest = hashlib.sha256(source_rgb.tobytes()+str(source_rgb.shape).encode()).hexdigest()
+                if digest in scale_seen:continue
+                h,w = source_rgb.shape[:2]
+                wh = max(1,round(h*args.working_width/w))
+                scale_cache[ri,image["photo"]] = image_scale(source_rgb,image.get("calibration"),[args.working_width/w,wh/h])
+                scale_seen.add(digest)
+            except (OSError,ValueError,KeyError):
+                pass  # Main pass preserves per-image errors.
+    manifest["scale_consistency"] = check_scale_consistency(list(scale_cache.values()),getattr(args,"scale_tolerance",.10))
     seen = {}
     html_parts = ["<!doctype html><html lang='ru'><meta charset='utf-8'><title>Сравнение лент A/B</title>",
                   "<style>body{font:17px system-ui;margin:24px;background:#f4f6f6}section{background:white;padding:20px;margin:24px 0}img{max-width:100%}a{color:#17646d}details{margin:10px 0}p{line-height:1.45}</style>",
@@ -171,9 +195,9 @@ def run(args):
                   "Красный контур — прошедшая фильтр гипотеза; серый — отклонённая; пурпурный — неоднозначное перекрытие. "
                   "Зелёным показаны только участки с двусторонней поддержкой границы. Это не экспертная разметка.</p>",
                   "<p>Маска-шаблон может проходить через разрыв. Supported-маска исключает шкалу и общие узлы. "
-                  "Голубые линии — поддержанные участки оси длины, жёлтые — сечения ширины. Подписи над фото используют рабочие пиксели. "
+                  "Голубые линии — поддержанные участки оси длины, жёлтые — сечения ширины. Подписи над фото используют рабочие пиксели и мкм при доступной калибровке. "
                   "L участка — сумма поддержанных отрезков, W маски — среднее нарисованных сечений подобранной маски, не проверенная внешняя ширина клеток. "
-                  "Серая штриховая ось обозначает только гипотезу в пробелах. Физические размеры не рассчитаны. "
+                  "Серая штриховая ось обозначает только гипотезу в пробелах. Калибровка в мкм экспериментальная и требует проверки. "
                   "Число осей не равно числу трихомов; пропуски исходного детектора этим опытом не исправляются.</p>"]
     for report_index, report in enumerate(args.seed_report):
         report = report.expanduser().resolve()
@@ -183,7 +207,7 @@ def run(args):
         manifest["seed_reports"].append({"path": str(report), "manifest_sha256": sha256(report/"manifest.json"),
                                          "source_revision": seed_manifest.get("git_commit"),
                                          "source_version": seed_manifest.get("program_version")})
-        for image in seed_manifest["images"]:
+        for image in sorted(seed_manifest["images"],key=lambda im:natural_key(im["photo"])):
             try:
                 source = source_dir/image["photo"]
                 rgb_original = read_image(source)
@@ -205,6 +229,10 @@ def run(args):
                 rgb = cv2.resize(rgb_original, (args.working_width, wh), interpolation=cv2.INTER_AREA)
                 labels = cv2.resize(labels.astype(np.float32), (args.working_width, wh), interpolation=cv2.INTER_NEAREST).astype(np.int32)
                 obstruction = cv2.resize(obstruction.astype(np.uint8), (args.working_width, wh), interpolation=cv2.INTER_NEAREST)>0
+                calibration = scale_cache[report_index,image["photo"]]
+                if calibration['origin']=='recomputed_from_source_ruler_windows':
+                    refined = ruler_mask(rgb_original.shape,Calibration(**calibration['source_calibration']))
+                    obstruction |= cv2.resize(refined.astype(np.uint8),(args.working_width,wh),interpolation=cv2.INTER_NEAREST)>0
                 field = field_mask(rgb)
                 proposals = [{"source_label": int(ident),
                               "result": compare_proposal(rgb, labels == ident, field, obstruction, settings)}
@@ -229,7 +257,8 @@ def run(args):
                        "source_report": report_index, "source_image_id": image["image_id"],
                        "original_size_xy": [w, h], "working_size_xy": [args.working_width, wh],
                        "original_to_working_scale_xy": [args.working_width/w, wh/h],
-                       "cross_proposal_overlaps": events, "proposals": []}
+                       "cross_proposal_overlaps": events, "proposals": [],
+                       "original_file":"original"+source.suffix.lower(), "calibration":calibration}
                 html_parts.extend([f"<section><h2>{html.escape(image['photo'])}</h2>",
                                    f"<a href='images/{image_id}/comparison.jpg'><img src='images/{image_id}/comparison.jpg'></a>"])
                 for proposal in proposals:
@@ -253,7 +282,7 @@ def run(args):
                         md.mkdir()
                         mask_png(md/"ambiguous.png",method["ambiguous_mask"])
                         for j,fit in enumerate(method["fits"],1):
-                            guides=export_fit(md/f"spine-{j:02d}",fit,rgb,f"{ident}.{j}")
+                            guides=export_fit(md/f"spine-{j:02d}",fit,rgb,f"{ident}.{j}",calibration)
                             fit["measurement_guides"]=guides
                             draw_guides(guide_layers[k],fit,guides)
                             contour(guide_layers[k],fit["template"],(225,35,15) if not fit["reasons"] else (150,150,150))
@@ -319,11 +348,13 @@ def run(args):
                                    "axes_rejected": sum(bool(f["reasons"]) for f in fits),
                                    "rejection_reasons": dict(Counter(r for f in fits for r in f["reasons"])),
                                    "median_source_coverage": float(np.median([m["source_coverage"] for m in methods])) if methods else None}
+    summary["calibrated_images"] = sum(im["calibration"]["working_um_per_px_xy"] is not None for im in manifest["images"])
     summary["notice"] = "Internal filtering counts, not biological recall/precision. Source coverage measures old proposal agreement, not truth."
     manifest["summary"] = summary
+    build_report(output,manifest)
     write_json(output/"manifest.json",manifest)
     write_json(output/"summary.json",summary)
-    (output/"index.html").write_text("\n".join(html_parts)+"</html>",encoding="utf-8")
+    (output/"comparison.html").write_text("\n".join(html_parts)+"</html>",encoding="utf-8")
     return 1 if manifest["errors"] else 0
 
 
@@ -337,6 +368,7 @@ def main():
     parser.add_argument("--min-width",type=float,default=4.)
     parser.add_argument("--max-width",type=float,default=30.)
     parser.add_argument("--patch-side",type=int,default=2)
+    parser.add_argument("--scale-tolerance",type=float,default=.10,help="Warn above this relative scale deviation within identical original resolutions")
     parser.add_argument("--smoothness-weight",type=float,default=3.,
                         help="B-only bonus for regular side boundaries; 0 reproduces 0.4 ranking")
     args = parser.parse_args()
